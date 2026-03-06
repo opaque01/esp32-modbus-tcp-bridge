@@ -1,0 +1,14 @@
+# ESP-IDF build outputs
+build/
+build.*/
+
+# CMake and generated helper files
+sdkconfig.old
+dependencies.lock
+
+# OS/editor noise
+.DS_Store
+.vscode/
+.idea/
+__pycache__/
+*.pyc

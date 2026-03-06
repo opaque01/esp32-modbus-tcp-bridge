@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP32 Modbus Konfiguration</title>
+    <link href="/bootstrap.min.css" rel="stylesheet">
+    <style>
+        /* Fallback styles if Bootstrap CSS is unavailable or incomplete */
+        #helpAccordion .accordion-item { border: 1px solid #ced4da; border-radius: .375rem; margin-bottom: .5rem; overflow: hidden; }
+        #helpAccordion .accordion-button { width: 100%; text-align: left; border: 0; padding: .65rem .9rem; background: #f8f9fa; cursor: pointer; }
+        #helpAccordion .accordion-button.collapsed { background: #ffffff; }
+        #helpAccordion .accordion-body { padding: .8rem .9rem; background: #ffffff; border-top: 1px solid #e9ecef; }
+        #helpAccordion .accordion-collapse.collapse { display: none; }
+        #helpAccordion .accordion-collapse.show { display: block; }
+    </style>
+</head>
+<body class="p-3">
+
+<div class="container">
+    <h1 class="mb-4">Konfiguration</h1>
+    <ul class="nav nav-tabs" id="configTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="network-tab" data-bs-toggle="tab" data-bs-target="#network" type="button" role="tab">Netzwerk</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="modbus-tab" data-bs-toggle="tab" data-bs-target="#modbus" type="button" role="tab">Modbus</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="status-tab" data-bs-toggle="tab" data-bs-target="#status" type="button" role="tab">Status</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="help-tab" data-bs-toggle="tab" data-bs-target="#help" type="button" role="tab">Help</button>
+        </li>
+    </ul>
+    <div class="tab-content mt-3" id="configTabsContent">
+        <div class="tab-pane fade show active" id="network" role="tabpanel">
+            <!-- network form fields -->
+            <form id="networkForm">
+                <div class="mb-3">
+                    <label for="dhcpSwitch" class="form-label">Netzwerkmodus</label>
+                    <select class="form-select" id="dhcpSwitch">
+                        <option value="dhcp">DHCP</option>
+                        <option value="static">Statisch</option>
+                    </select>
+                </div>
+                <div id="staticFields" style="display:none;">
+                    <div class="mb-3">
+                        <label for="ipAddr" class="form-label">IP-Adresse</label>
+                        <input type="text" class="form-control" id="ipAddr">
+                    </div>
+                    <div class="mb-3">
+                        <label for="netmask" class="form-label">Subnetzmaske</label>
+                        <input type="text" class="form-control" id="netmask">
+                    </div>
+                    <div class="mb-3">
+                        <label for="gateway" class="form-label">Gateway</label>
+                        <input type="text" class="form-control" id="gateway">
+                    </div>
+                    <div class="mb-3">
+                        <label for="dns1" class="form-label">DNS 1</label>
+                        <input type="text" class="form-control" id="dns1">
+                    </div>
+                    <div class="mb-3">
+                        <label for="dns2" class="form-label">DNS 2</label>
+                        <input type="text" class="form-control" id="dns2">
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">MAC-Adresse</label>
+                    <div class="form-control-plaintext" id="macAddr">-</div>
+                </div>
+                <div class="mb-3">
+                    <label for="apPassword" class="form-label">AP Passwort</label>
+                    <input type="password" class="form-control" id="apPassword" placeholder="ModBus">
+                </div>
+            </form>
+        </div>
+        <div class="tab-pane fade" id="modbus" role="tabpanel">
+            <!-- modbus form and mapping table -->
+            <form id="modbusForm">
+                <div class="mb-3">
+                    <label for="huaweiIp" class="form-label">Huawei Inverter IP</label>
+                    <input type="text" class="form-control" id="huaweiIp">
+                </div>
+                <div class="mb-3">
+                    <label for="huaweiPort" class="form-label">Port</label>
+                    <input type="number" class="form-control" id="huaweiPort" value="502">
+                </div>
+                <div class="mb-3">
+                    <label for="huaweiDev" class="form-label">Huawei WR‑Adresse</label>
+                    <input type="number" class="form-control" id="huaweiDev" value="1" min="1" max="247">
+                    <div class="form-text">Modbus Slave‑ID des Inverters/SDongle (z.B. Wechselrichter Adresse).</div>
+                </div>
+                <div class="mb-3">
+                    <label for="pollInterval" class="form-label">Abfrageintervall (s)</label>
+                    <input type="number" class="form-control" id="pollInterval" value="60" min="1">
+                    <div class="form-text">Zeitraum zwischen den Abfragen an den Huawei (Standard 60 s).</div>
+                </div>
+                <!-- interface selection not needed; device uses integrated Ethernet -->
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" id="mappingEnabled" checked>
+                    <label class="form-check-label" for="mappingEnabled">
+                        Mapping aktivieren (weitere Register zusätzlich zum Proxy)
+                    </label>
+                    <div class="form-text">Ist die Checkbox aus, werden die Registerwerte 1:1 gemäß Solar Inverter Modbus Interface Definitions an die Client‑Anfragen weitergegeben (nur Proxy, kein zusätzliches Mapping).</div>
+                </div>
+            </form>
+            <div id="mappingSection">
+                <h4>Register‑Mapping</h4>
+                <table class="table table-sm" id="mappingTable">
+                <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Name</th>
+                    <th>Register</th>
+                    <th>Funktion</th>
+                    <th>Typ</th>
+                    <th>Endian</th>
+                    <th>Faktor</th>
+                    <th>Einheit</th>
+                    <th>Timeout</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody>
+                <!-- rows appear here -->
+                </tbody>
+            </table>
+            <button class="btn btn-primary btn-sm" id="addRowBtn" type="button">+</button>
+        </div> <!-- end mappingSection -->
+        </div>
+        <div class="tab-pane fade" id="status" role="tabpanel">
+            <div class="row g-3 mb-3">
+                <div class="col-6 col-md-3">
+                    <div class="card text-center p-2">
+                        <div class="text-muted small">Betriebszeit</div>
+                        <div id="st-uptime" class="fw-bold">–</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card text-center p-2">
+                        <div class="text-muted small">Inverter</div>
+                        <div id="st-inverter"><span class="badge bg-secondary">unbekannt</span></div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card text-center p-2">
+                        <div class="text-muted small">Letzte Abfrage</div>
+                        <div id="st-last-poll" class="fw-bold">–</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <div class="card text-center p-2">
+                        <div class="text-muted small">Modbus-Clients</div>
+                        <div id="st-clients" class="fw-bold">–</div>
+                        <div id="st-clientlist"></div>
+                    </div>
+                </div>
+            </div>
+            <h5>Log</h5>
+            <div id="st-log" style="max-height:400px;overflow-y:auto;background:#1a1a1a;color:#ccc;font-size:0.8rem;padding:8px;border-radius:4px;font-family:monospace;">
+                <!-- Log-Einträge erscheinen hier -->
+            </div>
+            <div class="card p-3 mt-3">
+                <h5 class="mb-3">OTA Update</h5>
+                <input type="file" class="form-control mb-2" id="otaFile" accept=".bin,application/octet-stream">
+                <button class="btn btn-warning" id="otaUploadBtn" type="button">Firmware hochladen</button>
+                <div class="form-text mt-2" id="otaStatus">Binärdatei auswählen und Upload starten.</div>
+            </div>
+        </div>
+        <div class="tab-pane fade" id="help" role="tabpanel">
+            <h5 class="mb-3">FAQ</h5>
+            <div class="accordion" id="helpAccordion">
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="faq1h">
+                        <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#faq1" aria-expanded="true" aria-controls="faq1">
+                            Wie kann ich das System resetten?
+                        </button>
+                    </h2>
+                    <div id="faq1" class="accordion-collapse collapse show" aria-labelledby="faq1h" data-bs-parent="#helpAccordion">
+                        <div class="accordion-body">
+                            BOOT/Reset-Taster am ESP32-S3 mindestens 10 Sekunden gedrückt halten. Danach werden die Einstellungen zurückgesetzt und das Gerät startet neu.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="faq2h">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq2" aria-expanded="false" aria-controls="faq2">
+                            Warum sehe ich keine Daten im Proxy-Modus?
+                        </button>
+                    </h2>
+                    <div id="faq2" class="accordion-collapse collapse" aria-labelledby="faq2h" data-bs-parent="#helpAccordion">
+                        <div class="accordion-body">
+                            Prüfen: Huawei IP, Port 502, Geräte-ID, und ob im Status "Inverter verbunden" angezeigt wird. Erst wenn der Inverter verbunden ist, kann der Proxy gültige Register liefern.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="faq3h">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq3" aria-expanded="false" aria-controls="faq3">
+                            Welche Geräte-ID soll ich verwenden?
+                        </button>
+                    </h2>
+                    <div id="faq3" class="accordion-collapse collapse" aria-labelledby="faq3h" data-bs-parent="#helpAccordion">
+                        <div class="accordion-body">
+                            Für Solaranzeige am ESP-Proxy in der Regel Geräte-ID 1. Für die Verbindung vom ESP zum Huawei/S-Dongle die in deiner Anlage verwendete Modbus-Adresse (z.B. 3).
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="faq4h">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq4" aria-expanded="false" aria-controls="faq4">
+                            Was bedeutet "Aktive Clients" im Status?
+                        </button>
+                    </h2>
+                    <div id="faq4" class="accordion-collapse collapse" aria-labelledby="faq4h" data-bs-parent="#helpAccordion">
+                        <div class="accordion-body">
+                            Das sind aktuell verbundene Modbus-TCP-Clients am ESP (z.B. Solaranzeige, TA oder Testtools). Die IP-Liste darunter zeigt, wer gerade verbunden ist.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="faq5h">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq5" aria-expanded="false" aria-controls="faq5">
+                            Welche Abfrageintervalle sind sinnvoll?
+                        </button>
+                    </h2>
+                    <div id="faq5" class="accordion-collapse collapse" aria-labelledby="faq5h" data-bs-parent="#helpAccordion">
+                        <div class="accordion-body">
+                            Für den sDongle mindestens 60 Sekunden empfehlen. Zu häufige Abfragen können zu Verbindungsabbrüchen oder temporär geschlossenen Ports führen.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="faq6h">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq6" aria-expanded="false" aria-controls="faq6">
+                            JSON-Links (API)
+                        </button>
+                    </h2>
+                    <div id="faq6" class="accordion-collapse collapse" aria-labelledby="faq6h" data-bs-parent="#helpAccordion">
+                        <div class="accordion-body">
+                            <div class="mb-2">Die wichtigsten JSON-Endpunkte:</div>
+                            <div><a href="http://192.168.1.15/config" target="_blank" rel="noopener">http://192.168.1.15/config</a> (Konfiguration)</div>
+                            <div><a href="http://192.168.1.15/status" target="_blank" rel="noopener">http://192.168.1.15/status</a> (Status)</div>
+                            <div><a href="http://192.168.1.15/registers" target="_blank" rel="noopener">http://192.168.1.15/registers</a> (Register-Liste)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="faq7h">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq7" aria-expanded="false" aria-controls="faq7">
+                            Wie kann ich testen, ob der sDongle erreichbar ist?
+                        </button>
+                    </h2>
+                    <div id="faq7" class="accordion-collapse collapse" aria-labelledby="faq7h" data-bs-parent="#helpAccordion">
+                        <div class="accordion-body">
+                            <div class="mb-2">Linux / macOS:</div>
+                            <div><code>nc -z -G 1 192.168.1.101 502 && echo "open" || echo "closed"</code></div>
+                            <div class="mt-3 mb-2">Windows (PowerShell):</div>
+                            <div><code>if ((Test-NetConnection 192.168.1.101 -Port 502).TcpTestSucceeded) { "open" } else { "closed" }</code></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="mt-4" id="actionButtons">
+        <button class="btn btn-success" id="saveBtn">Speichern</button>
+    </div>
+    <footer class="border-top py-3 mt-4">
+        <div class="container">
+            <p class="text-center text-muted small">
+                Modbus TCP Bridge <span id="fw-version">v1.0.0</span>. &copy; Copyright 2026 by Walter Kruml. All rights reserved.
+            </p>
+        </div>
+    </footer>
+</div>
+
+<script src="/bootstrap.bundle.min.js"></script>
+<script>
+    // show/hide mapping section based on checkbox
+    function updateMappingVisibility() {
+        var enabled = document.getElementById('mappingEnabled').checked;
+        document.getElementById('mappingSection').style.display = enabled ? '' : 'none';
+    }
+    document.getElementById('mappingEnabled').addEventListener('change', updateMappingVisibility);
+    // initialize on load
+    updateMappingVisibility();
+
+    // JS to toggle static fields
+    document.getElementById('dhcpSwitch').addEventListener('change', function() {
+        document.getElementById('staticFields').style.display = this.value === 'static' ? 'block' : 'none';
+    });
+    // mapping operations
+    var availableRegisters = [];
+    function loadAvailableRegisters(callback) {
+        fetch('/registers')
+            .then(r => r.json())
+            .then(data => { availableRegisters = data; if (callback) callback(); })
+            .catch(() => {
+                // fallback list for offline HTML testing
+                availableRegisters = [
+                    {name:'BAT SOC',register:37004,factor:0.1,unit:'%',func:3,type:'16u',order:'BE'},
+                    {name:'PV Spannung 1',register:32014,factor:0.1,unit:'V',func:3,type:'16u',order:'BE'},
+                    {name:'AC Leistung',register:32080,factor:1,unit:'W',func:3,type:'16u',order:'BE'}
+                ];
+                if (callback) callback();
+            });
+    }
+    function makeNameSelect(value) {
+        var sel = document.createElement('select');
+        sel.className = 'form-select';
+        sel.innerHTML = '<option value=""></option>';
+        var groups = {};
+        availableRegisters.forEach(function(r) {
+            var dev = r.device || 'Inverter';
+            if (!groups[dev]) groups[dev] = [];
+            groups[dev].push(r);
+        });
+        ['Inverter', 'Batterie', 'Wallbox'].forEach(function(dev) {
+            if (!groups[dev] || groups[dev].length === 0) return;
+            var og = document.createElement('optgroup');
+            og.label = dev + ' -';
+            groups[dev].forEach(function(r) {
+                var opt = document.createElement('option');
+                opt.value = String(r.register);
+                opt.textContent = r.name + ' (' + r.register + ')';
+                opt.setAttribute('data-name', r.name || '');
+                opt.setAttribute('data-device', r.device || '');
+                og.appendChild(opt);
+            });
+            sel.appendChild(og);
+        });
+        if (value) sel.value = String(value);
+        sel.addEventListener('change', function() {
+            var reg = parseInt(this.value,10);
+            var rec = availableRegisters.find(rr => rr.register === reg);
+            if (rec) {
+                var tr = this.closest('tr');
+                tr.cells[2].firstChild.value = rec.register;
+                if (rec.func !== undefined) tr.cells[3].firstChild.value = rec.func;
+                if (rec.type !== undefined) tr.cells[4].firstChild.value = rec.type;
+                if (rec.order !== undefined) tr.cells[5].firstChild.value = rec.order;
+                tr.cells[6].firstChild.value = rec.factor || 1;
+                tr.cells[7].firstChild.value = rec.unit || '';
+            }
+        });
+        return sel;
+    }
+    function addMappingRow(entry) {
+        var tbody = document.querySelector('#mappingTable tbody');
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td></td>' +
+            '<td></td>' +
+            '<td><input class="form-control" value="' + (entry.register||'') + '"></td>' +
+            '<td><input class="form-control" value="' + (entry.func||'03') + '"></td>' +
+            '<td><input class="form-control" value="' + (entry.type||'16u') + '"></td>' +
+            '<td><input class="form-control" value="' + (entry.order||'BE') + '"></td>' +
+            '<td><input class="form-control" value="' + (entry.factor||1) + '"></td>' +
+            '<td><input class="form-control" value="' + (entry.unit||'') + '"></td>' +
+            '<td><input class="form-control" value="' + (entry.timeout||0) + '"></td>' +
+            '<td><button class="btn btn-sm btn-danger" type="button" onclick="this.closest(\'tr\').remove();renumberRows();">&ndash;</button></td>';
+        tbody.appendChild(tr);
+        // insert select into first cell
+        var sel = makeNameSelect(entry.register);
+        tr.cells[1].appendChild(sel);
+        renumberRows();
+    }
+    function renumberRows() {
+        var i = 1;
+        document.querySelectorAll('#mappingTable tbody tr').forEach(tr => {
+            tr.cells[0].textContent = i++;
+        });
+    }
+    function gatherMappingEntries() {
+        var arr = [];
+        document.querySelectorAll('#mappingTable tbody tr').forEach(tr => {
+            var cells = tr.cells;
+            var regNum = parseInt(cells[2].firstChild.value, 10);
+            var selectedOpt = cells[1].querySelector('select') ? cells[1].querySelector('select').selectedOptions[0] : null;
+            if (!Number.isFinite(regNum) || regNum <= 0) {
+                return;
+            }
+            arr.push({
+                name: selectedOpt ? (selectedOpt.getAttribute('data-name') || selectedOpt.textContent || '') : '',
+                register: regNum,
+                func: cells[3].firstChild.value,
+                type: cells[4].firstChild.value,
+                order: cells[5].firstChild.value,
+                factor: parseFloat(cells[6].firstChild.value) || 1,
+                unit: cells[7].firstChild.value,
+                timeout: parseInt(cells[8].firstChild.value,10) || 0
+            });
+        });
+        return arr;
+    }
+
+    // load existing configuration from server (after registers loaded)
+    function loadConfig() {
+        fetch('/config')
+            .then(resp => resp.json())
+            .then(cfg => {
+                document.getElementById('huaweiIp').value = cfg.huaweiIp || '';
+                document.getElementById('huaweiPort').value = cfg.huaweiPort || 502;
+                document.getElementById('huaweiDev').value = cfg.huaweiDev || 1;
+                document.getElementById('pollInterval').value = cfg.pollInterval || 60;
+                document.getElementById('mappingEnabled').checked = cfg.mappingEnabled !== false;
+                document.getElementById('dhcpSwitch').value = cfg.dhcp === false ? 'static' : 'dhcp';
+                document.getElementById('ipAddr').value = cfg.ipAddr || '';
+                document.getElementById('netmask').value = cfg.netmask || '';
+                document.getElementById('gateway').value = cfg.gateway || '';
+                document.getElementById('dns1').value = cfg.dns1 || '';
+                document.getElementById('dns2').value = cfg.dns2 || '';
+                document.getElementById('apPassword').value = cfg.apPassword || '';
+                document.getElementById('macAddr').textContent = cfg.ethMac || '-';
+                document.getElementById('dhcpSwitch').dispatchEvent(new Event('change'));
+                updateMappingVisibility();
+                document.querySelector('#mappingTable tbody').innerHTML = '';
+                // populate mapping table rows from cfg.mapping (if any)
+                if (cfg.mappingEnabled && Array.isArray(cfg.mapping) && cfg.mapping.length) {
+                    cfg.mapping.forEach(e => addMappingRow(e));
+                } else if (cfg.mappingEnabled) {
+                    addMappingRow({});
+                }
+            })
+            .catch(err => console.warn('config load failed', err));
+    }
+
+    window.addEventListener('load', function() {
+        loadAvailableRegisters(loadConfig);
+    });
+
+    document.getElementById('addRowBtn').addEventListener('click', () => {
+        addMappingRow({});
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', () => {
+        const cfg = {
+            huaweiIp: document.getElementById('huaweiIp').value,
+            huaweiPort: parseInt(document.getElementById('huaweiPort').value, 10),
+            huaweiDev: parseInt(document.getElementById('huaweiDev').value, 10),
+            pollInterval: parseInt(document.getElementById('pollInterval').value, 10),
+            mappingEnabled: document.getElementById('mappingEnabled').checked,
+            dhcp: document.getElementById('dhcpSwitch').value === 'dhcp',
+            ipAddr: document.getElementById('ipAddr').value,
+            netmask: document.getElementById('netmask').value,
+            gateway: document.getElementById('gateway').value,
+            dns1: document.getElementById('dns1').value,
+            dns2: document.getElementById('dns2').value,
+            apPassword: document.getElementById('apPassword').value,
+            mapping: gatherMappingEntries()
+        };
+        fetch('/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(cfg)
+        })
+            .then((r) => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.text();
+            })
+            .then(() => { alert('Einstellungen gespeichert'); loadConfig(); })
+            .catch(err => alert('Speichern fehlgeschlagen'));
+    });
+
+    /* ---------------------------------------------------------------- */
+    /* Status-Tab                                                         */
+    /* ---------------------------------------------------------------- */
+    var statusTimer = null;
+
+    function formatUptime(seconds) {
+        var h = Math.floor(seconds / 3600);
+        var m = Math.floor((seconds % 3600) / 60);
+        var s = seconds % 60;
+        return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+    }
+
+    function formatTs(ts) {
+        if (!ts) return '–';
+        return new Date(ts * 1000).toLocaleTimeString();
+    }
+
+    function levelColor(level) {
+        if (level === 'E') return '#ff6b6b';
+        if (level === 'W') return '#ffd93d';
+        return '#ccc';
+    }
+
+    function fetchStatus() {
+        fetch('/status')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.firmware_version) {
+                    document.getElementById('fw-version').textContent = 'v' + data.firmware_version;
+                }
+                document.getElementById('st-uptime').textContent = formatUptime(data.uptime_s || 0);
+
+                var badge = document.getElementById('st-inverter');
+                var inverterName = data.inverter_name || '';
+                if (data.inverter_connected) {
+                    badge.innerHTML = '<span class="badge bg-success text-dark" style="color:#111 !important;">verbunden</span>' +
+                        (inverterName ? '<div class="small mt-1 text-muted">' + inverterName + '</div>' : '');
+                } else {
+                    badge.innerHTML = '<span class="badge bg-danger">getrennt</span>' +
+                        (inverterName ? '<div class="small mt-1 text-muted">' + inverterName + '</div>' : '');
+                }
+
+                document.getElementById('st-last-poll').textContent = formatTs(data.last_poll_ts);
+                document.getElementById('st-clients').textContent = data.modbus_clients !== undefined ? data.modbus_clients : '–';
+                var cl = document.getElementById('st-clientlist');
+                if (Array.isArray(data.client_ips) && data.client_ips.length > 0) {
+                    cl.innerHTML = data.client_ips.map(function(ip) {
+                        return '<div class="small mt-1 text-muted">' + ip + '</div>';
+                    }).join('');
+                } else {
+                    cl.innerHTML = '';
+                }
+
+                var logDiv = document.getElementById('st-log');
+                if (Array.isArray(data.log) && data.log.length > 0) {
+                    logDiv.innerHTML = data.log.map(function(e) {
+                        var color = levelColor(e.level);
+                        var time = formatTs(e.ts);
+                        return '<div style="color:' + color + '">[' + time + '] ' + e.level + ' (' + e.tag + '): ' + e.msg + '</div>';
+                    }).join('');
+                } else {
+                    var now = new Date().toLocaleTimeString();
+                    var lines = [];
+                    lines.push('<div style="color:#8fd19e">[' + now + '] I (status): UI verbunden, Status erfolgreich geladen.</div>');
+                    lines.push('<div style="color:' + (data.inverter_connected ? '#8fd19e' : '#ffd93d') + '">[' + now + '] ' +
+                        (data.inverter_connected ? 'I' : 'W') + ' (inverter): ' +
+                        (data.inverter_connected ? 'Inverter verbunden' : 'Inverter getrennt') + '.</div>');
+                    lines.push('<div style="color:#9ec5fe">[' + now + '] I (poll): Letzte Abfrage: ' + formatTs(data.last_poll_ts) + '.</div>');
+                    lines.push('<div style="color:#9ec5fe">[' + now + '] I (modbus): Aktive Clients: ' + (data.modbus_clients !== undefined ? data.modbus_clients : '–') + '.</div>');
+                    logDiv.innerHTML = lines.join('');
+                }
+            })
+            .catch(function() {
+                document.getElementById('st-inverter').innerHTML = '<span class="badge bg-warning text-dark">Fehler</span>';
+            });
+    }
+
+    function startStatusPolling() {
+        if (statusTimer) return;
+        fetchStatus();
+        statusTimer = setInterval(fetchStatus, 5000);
+    }
+    function stopStatusPolling() {
+        if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+    }
+
+    /* Tab handling fallback (works even if Bootstrap JS is unavailable) */
+    function activateTabByButton(btn) {
+        var target = btn.getAttribute('data-bs-target');
+        if (!target || target.charAt(0) !== '#') return;
+
+        document.querySelectorAll('[data-bs-toggle="tab"]').forEach(function(b) {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+        });
+        btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+
+        document.querySelectorAll('.tab-pane').forEach(function(p) {
+            p.classList.remove('show', 'active');
+        });
+        var pane = document.querySelector(target);
+        if (pane) pane.classList.add('show', 'active');
+
+        if (btn.id === 'status-tab') {
+            startStatusPolling();
+        } else {
+            stopStatusPolling();
+        }
+
+        var actionButtons = document.getElementById('actionButtons');
+        if (actionButtons) {
+            actionButtons.style.display = (btn.id === 'help-tab') ? 'none' : '';
+        }
+    }
+
+    function initHelpAccordionFallback() {
+        var acc = document.getElementById('helpAccordion');
+        if (!acc) return;
+        acc.querySelectorAll('[data-bs-toggle="collapse"]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var targetSel = btn.getAttribute('data-bs-target');
+                if (!targetSel || targetSel.charAt(0) !== '#') return;
+                var target = document.querySelector(targetSel);
+                if (!target) return;
+
+                var wasOpen = target.classList.contains('show');
+                acc.querySelectorAll('.accordion-collapse.show').forEach(function(el) {
+                    el.classList.remove('show');
+                });
+                acc.querySelectorAll('[data-bs-toggle="collapse"]').forEach(function(b) {
+                    b.classList.add('collapsed');
+                    b.setAttribute('aria-expanded', 'false');
+                });
+                if (!wasOpen) {
+                    target.classList.add('show');
+                    btn.classList.remove('collapsed');
+                    btn.setAttribute('aria-expanded', 'true');
+                }
+            });
+        });
+    }
+
+    function initTabs() {
+        var tabs = document.querySelectorAll('[data-bs-toggle="tab"]');
+        tabs.forEach(function(btn) {
+            btn.addEventListener('click', function(ev) {
+                ev.preventDefault();
+                activateTabByButton(btn);
+            });
+        });
+        var active = document.querySelector('[data-bs-toggle="tab"].active') || document.getElementById('network-tab');
+        if (active) activateTabByButton(active);
+    }
+
+    document.getElementById('otaUploadBtn').addEventListener('click', function() {
+        var fileInput = document.getElementById('otaFile');
+        var statusEl = document.getElementById('otaStatus');
+        if (!fileInput.files || fileInput.files.length === 0) {
+            statusEl.textContent = 'Bitte zuerst eine .bin-Datei auswählen.';
+            return;
+        }
+
+        var file = fileInput.files[0];
+        statusEl.textContent = 'Upload läuft...';
+        fetch('/ota', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/octet-stream'},
+            body: file
+        })
+        .then(function(resp) {
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            statusEl.textContent = 'OTA erfolgreich. Gerät startet neu.';
+        })
+        .catch(function(err) {
+            statusEl.textContent = 'OTA fehlgeschlagen: ' + err.message;
+        });
+    });
+
+    window.addEventListener('load', function() {
+        initTabs();
+        initHelpAccordionFallback();
+    });
+</script>
+</body>
+</html>

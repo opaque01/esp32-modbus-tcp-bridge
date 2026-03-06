@@ -1,0 +1,30 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "config.h"
+        "reg_cache.c"
+        "modbus_client.c"
+        "modbus_server.c"
+        "status_log.c"
+        "network.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_wifi
+        esp_eth
+        esp_http_server
+        app_update
+        esp_timer
+        nvs_flash
+        driver
+        lwip
+        esp_netif
+        esp_event
+        json
+    EMBED_TXTFILES
+        "ui.html"
+        "bootstrap.min.css"
+        "bootstrap.bundle.min.js"
+    EMBED_FILES
+        "favicon.ico"
+)
