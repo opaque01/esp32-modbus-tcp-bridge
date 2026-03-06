@@ -502,6 +502,21 @@ static esp_err_t ota_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static void delayed_reboot_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(800));
+    ESP_LOGI(TAG, "Manual reboot requested via web UI");
+    esp_restart();
+}
+
+static esp_err_t reboot_post_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"rebooting\":true}");
+    xTaskCreate(delayed_reboot_task, "delayed_reboot", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -570,6 +585,7 @@ static void start_webserver(void)
         { .uri = "/registers", .method = HTTP_GET,  .handler = registers_get_handler },
         { .uri = "/status",    .method = HTTP_GET,  .handler = status_get_handler    },
         { .uri = "/ota",       .method = HTTP_POST, .handler = ota_post_handler      },
+        { .uri = "/reboot",    .method = HTTP_POST, .handler = reboot_post_handler   },
     };
     for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++) {
         httpd_register_uri_handler(server, &uris[i]);

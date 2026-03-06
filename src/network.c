@@ -32,6 +32,8 @@
 
 static const char *TAG = "network";
 static esp_netif_t *s_eth_netif = NULL;
+static volatile bool s_captive_dns_running = false;
+static int s_captive_dns_sock = -1;
 
 static bool mac_is_invalid(const uint8_t mac[6])
 {
@@ -71,7 +73,7 @@ static const eth_profile_t s_eth_profiles[] = {
 #define AP_SSID           "ModBus Server"
 #define AP_MAX_STA        4
 #define AP_CHANNEL        1
-#define AP_TIMEOUT_SECS   600
+#define AP_TIMEOUT_SECS   60
 #define AP_IP_ADDR        "192.168.4.1"
 #define HOSTNAME          "modbusserver"
 
@@ -89,15 +91,16 @@ static void ap_timer_task(void *pvParameters)
 
     while (remaining > 0) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        wifi_sta_list_t sta;
-        if (esp_wifi_ap_get_sta_list(&sta) == ESP_OK && sta.num > 0) {
-            remaining = AP_TIMEOUT_SECS;   /* client connected -> reset timer */
-        } else {
-            remaining--;
-        }
+        remaining--;
     }
 
     ESP_LOGI(TAG, "AP timeout — shutting down Wi-Fi AP");
+    s_captive_dns_running = false;
+    if (s_captive_dns_sock >= 0) {
+        shutdown(s_captive_dns_sock, SHUT_RDWR);
+        close(s_captive_dns_sock);
+        s_captive_dns_sock = -1;
+    }
     esp_wifi_stop();
     vTaskDelete(NULL);
 }
@@ -177,12 +180,19 @@ static void captive_dns_task(void *pvParameters)
         vTaskDelete(NULL);
         return;
     }
+    s_captive_dns_sock = sock;
+
+    struct timeval tv = {
+        .tv_sec = 1,
+        .tv_usec = 0,
+    };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     ESP_LOGI(TAG, "Captive DNS started on %s:53", AP_IP_ADDR);
 
     uint8_t req[512];
     uint8_t resp[512];
-    while (1) {
+    while (s_captive_dns_running) {
         struct sockaddr_in from;
         socklen_t from_len = sizeof(from);
         int len = recvfrom(sock, req, sizeof(req), 0, (struct sockaddr *)&from, &from_len);
@@ -194,6 +204,12 @@ static void captive_dns_task(void *pvParameters)
             sendto(sock, resp, out_len, 0, (struct sockaddr *)&from, from_len);
         }
     }
+    close(sock);
+    if (s_captive_dns_sock == sock) {
+        s_captive_dns_sock = -1;
+    }
+    ESP_LOGI(TAG, "Captive DNS stopped");
+    vTaskDelete(NULL);
 }
 
 /* -----------------------------------------------------------------------
@@ -305,6 +321,7 @@ static void wifi_ap_init(void)
     ESP_LOGI(TAG, "AP started — SSID: %s", AP_SSID);
 
     /* Captive portal DNS (wildcard -> 192.168.4.1) */
+    s_captive_dns_running = true;
     xTaskCreate(captive_dns_task, "captive_dns", 4096, NULL, 4, NULL);
 
     /* AP auto-shutdown task */

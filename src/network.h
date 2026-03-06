@@ -10,8 +10,8 @@
  *
  * Ethernet: applies DHCP or static IP from s_config.
  * Wi-Fi AP: starts with SSID "ModBus Server" and s_config.ap_password;
- *           stays open for 60 s, resets timer while at least one STA is
- *           connected, then shuts down automatically.
+ *           stays open for 60 s and then shuts down automatically.
+ * Captive DNS portal is stopped together with the AP timeout.
  *
  * GPIO0 factory-reset task: 10-second press erases NVS and reboots.
  */

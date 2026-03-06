@@ -180,7 +180,7 @@
                     </h2>
                     <div id="faq1" class="accordion-collapse collapse show" aria-labelledby="faq1h" data-bs-parent="#helpAccordion">
                         <div class="accordion-body">
-                            BOOT/Reset-Taster am ESP32-S3 mindestens 10 Sekunden gedrückt halten. Danach werden die Einstellungen zurückgesetzt und das Gerät startet neu.
+                            Nur die BOOT-Taste (GPIO0) am ESP32-S3 mindestens 10 Sekunden gedrückt halten (besser 12 Sekunden). Der RESET/EN-Taster startet nur neu und löscht keine Einstellungen.
                         </div>
                     </div>
                 </div>
@@ -273,6 +273,7 @@
     </div>
     <div class="mt-4" id="actionButtons">
         <button class="btn btn-success" id="saveBtn">Speichern</button>
+        <button class="btn btn-outline-danger ms-2" id="rebootBtn" type="button">Neustart</button>
     </div>
     <footer class="border-top py-3 mt-4">
         <div class="container">
@@ -468,6 +469,19 @@
             })
             .then(() => { alert('Einstellungen gespeichert'); loadConfig(); })
             .catch(err => alert('Speichern fehlgeschlagen'));
+    });
+
+    document.getElementById('rebootBtn').addEventListener('click', () => {
+        if (!confirm('ESP32 jetzt neu starten?')) return;
+        fetch('/reboot', { method: 'POST' })
+            .then((r) => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(() => {
+                alert('Neustart ausgelöst. Bitte 10-20 Sekunden warten und Seite neu laden.');
+            })
+            .catch(() => alert('Neustart fehlgeschlagen'));
     });
 
     /* ---------------------------------------------------------------- */
