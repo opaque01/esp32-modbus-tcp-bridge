@@ -38,6 +38,11 @@
             <!-- network form fields -->
             <form id="networkForm">
                 <div class="mb-3">
+                    <label for="hostname" class="form-label">Hostname</label>
+                    <input type="text" class="form-control" id="hostname" placeholder="modbusserver">
+                    <div class="form-text">Wird als Gerätename im LAN gesetzt. Erlaubt sind Buchstaben, Zahlen und Bindestriche.</div>
+                </div>
+                <div class="mb-3">
                     <label for="dhcpSwitch" class="form-label">Netzwerkmodus</label>
                     <select class="form-select" id="dhcpSwitch">
                         <option value="dhcp">DHCP</option>
@@ -114,6 +119,7 @@
                     <th>#</th>
                     <th>Name</th>
                     <th>Register</th>
+                    <th>Wert</th>
                     <th>Funktion</th>
                     <th>Typ</th>
                     <th>Endian</th>
@@ -136,6 +142,7 @@
                     <div class="card text-center p-2">
                         <div class="text-muted small">Betriebszeit</div>
                         <div id="st-uptime" class="fw-bold">–</div>
+                        <div id="st-network" class="small mt-1 text-muted">–</div>
                     </div>
                 </div>
                 <div class="col-6 col-md-3">
@@ -249,6 +256,7 @@
                             <div><a href="http://192.168.1.15/config" target="_blank" rel="noopener">http://192.168.1.15/config</a> (Konfiguration)</div>
                             <div><a href="http://192.168.1.15/status" target="_blank" rel="noopener">http://192.168.1.15/status</a> (Status)</div>
                             <div><a href="http://192.168.1.15/registers" target="_blank" rel="noopener">http://192.168.1.15/registers</a> (Register-Liste)</div>
+                            <div><a href="http://192.168.1.15/register-value?addr=30000&amp;count=15" target="_blank" rel="noopener">http://192.168.1.15/register-value?addr=30000&amp;count=15</a> (Beispiel Registerwert / Model Name)</div>
                         </div>
                     </div>
                 </div>
@@ -278,7 +286,7 @@
     <footer class="border-top py-3 mt-4">
         <div class="container">
             <p class="text-center text-muted small">
-                Modbus TCP Bridge <span id="fw-version">v1.0.0</span>. &copy; Copyright 2026 by Walter Kruml. All rights reserved.
+                Modbus TCP Bridge <span id="fw-version">v1.0.1</span>. &copy; Copyright 2026 by Walter Kruml. All rights reserved.
             </p>
         </div>
     </footer>
@@ -301,8 +309,10 @@
     });
     // mapping operations
     var availableRegisters = [];
+    var registerValueTimer = null;
+    var registerCatalogUrl = '/registers?v=' + Date.now();
     function loadAvailableRegisters(callback) {
-        fetch('/registers')
+        fetch(registerCatalogUrl, { cache: 'no-store' })
             .then(r => r.json())
             .then(data => { availableRegisters = data; if (callback) callback(); })
             .catch(() => {
@@ -325,16 +335,26 @@
             if (!groups[dev]) groups[dev] = [];
             groups[dev].push(r);
         });
-        ['Inverter', 'Batterie', 'Wallbox'].forEach(function(dev) {
+        Object.keys(groups).sort(function(a, b) {
+            return a.localeCompare(b, 'de');
+        }).forEach(function(dev) {
             if (!groups[dev] || groups[dev].length === 0) return;
             var og = document.createElement('optgroup');
             og.label = dev + ' -';
             groups[dev].forEach(function(r) {
                 var opt = document.createElement('option');
                 opt.value = String(r.register);
-                opt.textContent = r.name + ' (' + r.register + ')';
+                var suffix = r.writeable ? ' [RW]' : '';
+                opt.textContent = r.name + ' (' + r.register + ')' + suffix;
                 opt.setAttribute('data-name', r.name || '');
                 opt.setAttribute('data-device', r.device || '');
+                opt.setAttribute('data-type', r.type || '');
+                opt.setAttribute('data-func', r.func || 3);
+                opt.setAttribute('data-order', r.order || 'BE');
+                opt.setAttribute('data-factor', r.factor || 1);
+                opt.setAttribute('data-unit', r.unit || '');
+                opt.setAttribute('data-length', r.length || 1);
+                opt.setAttribute('data-writeable', r.writeable ? 'true' : 'false');
                 og.appendChild(opt);
             });
             sel.appendChild(og);
@@ -345,15 +365,152 @@
             var rec = availableRegisters.find(rr => rr.register === reg);
             if (rec) {
                 var tr = this.closest('tr');
-                tr.cells[2].firstChild.value = rec.register;
-                if (rec.func !== undefined) tr.cells[3].firstChild.value = rec.func;
-                if (rec.type !== undefined) tr.cells[4].firstChild.value = rec.type;
-                if (rec.order !== undefined) tr.cells[5].firstChild.value = rec.order;
-                tr.cells[6].firstChild.value = rec.factor || 1;
-                tr.cells[7].firstChild.value = rec.unit || '';
+                applyRegisterMetadataToRow(tr, rec);
+                updateRegisterValueForRow(tr);
             }
         });
         return sel;
+    }
+    function applyRegisterMetadataToRow(tr, rec) {
+        if (!tr || !rec) return;
+        tr.cells[2].firstChild.value = rec.register;
+        if (rec.func !== undefined) tr.cells[4].firstChild.value = rec.func;
+        if (rec.type !== undefined) tr.cells[5].firstChild.value = rec.type;
+        if (rec.order !== undefined) tr.cells[6].firstChild.value = rec.order;
+        tr.cells[7].firstChild.value = rec.factor || 1;
+        tr.cells[8].firstChild.value = rec.unit || '';
+    }
+    function applyScale(value, factor) {
+        var f = parseFloat(factor);
+        if (!isFinite(f) || f === 0) f = 1;
+        if (f > 1) return value / f;
+        if (f > 0 && f < 1) return value * (1 / f);
+        return value;
+    }
+    function formatScaledValue(value, factor, unit) {
+        var scaled = applyScale(value, factor);
+        var text = Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(3).replace(/\.?0+$/,'');
+        return text + (unit ? ' ' + unit : '');
+    }
+    function toSigned16(v) {
+        return v > 0x7fff ? v - 0x10000 : v;
+    }
+    function combineWords(raws, signed) {
+        var n = 0n;
+        raws.forEach(function(v) {
+            n = (n << 16n) | BigInt(v & 0xffff);
+        });
+        if (signed) {
+            var bits = BigInt(raws.length * 16);
+            var sign = 1n << (bits - 1n);
+            if (n & sign) n -= 1n << bits;
+        }
+        return n;
+    }
+    function decodeString(raws) {
+        var chars = [];
+        raws.forEach(function(v) {
+            var hi = (v >> 8) & 0xff;
+            var lo = v & 0xff;
+            if (hi) chars.push(String.fromCharCode(hi));
+            if (lo) chars.push(String.fromCharCode(lo));
+        });
+        return chars.join('').replace(/\0+$/, '');
+    }
+    function decodeRegisterValue(raws, type, factor, unit) {
+        if (!Array.isArray(raws) || raws.length === 0) return { display: '–', raw: '–' };
+        if (type === 'string') {
+            return { display: decodeString(raws) || 'leer', raw: raws.join(', ') };
+        }
+        if (type === 'timestamp' && raws.length >= 2) {
+            var ts = Number(combineWords(raws.slice(0, 2), false));
+            return { display: new Date(ts * 1000).toLocaleString(), raw: raws.join(', ') };
+        }
+        if (type === 'block') {
+            return { display: 'mehrteilig (' + raws.length + ' Reg.)', raw: raws.join(', ') };
+        }
+        if (type === '16u') {
+            return { display: formatScaledValue(raws[0], factor, unit), raw: String(raws[0]) };
+        }
+        if (type === '16s') {
+            var v16 = toSigned16(raws[0]);
+            return { display: formatScaledValue(v16, factor, unit), raw: String(v16) };
+        }
+        if (type === '32u' && raws.length >= 2) {
+            var v32u = Number(combineWords(raws.slice(0, 2), false));
+            return { display: formatScaledValue(v32u, factor, unit), raw: raws.join(', ') };
+        }
+        if (type === '32s' && raws.length >= 2) {
+            var v32s = Number(combineWords(raws.slice(0, 2), true));
+            return { display: formatScaledValue(v32s, factor, unit), raw: raws.join(', ') };
+        }
+        if (type === '64u' && raws.length >= 4) {
+            var v64u = combineWords(raws.slice(0, 4), false).toString();
+            return { display: v64u + (unit ? ' ' + unit : ''), raw: raws.join(', ') };
+        }
+        if (type === '64s' && raws.length >= 4) {
+            var v64s = combineWords(raws.slice(0, 4), true).toString();
+            return { display: v64s + (unit ? ' ' + unit : ''), raw: raws.join(', ') };
+        }
+        return { display: 'nicht direkt dekodierbar', raw: raws.join(', ') };
+    }
+    function setRegisterValueCell(tr, html) {
+        var cell = tr.cells[3];
+        if (cell) {
+            cell.innerHTML = html;
+        }
+    }
+    function updateRegisterValueForRow(tr) {
+        if (!tr) return;
+        var regInput = tr.cells[2] && tr.cells[2].querySelector('input');
+        if (!regInput) return;
+        var reg = parseInt(regInput.value, 10);
+        if (!Number.isFinite(reg) || reg <= 0) {
+            setRegisterValueCell(tr, '<span class="text-muted">–</span>');
+            return;
+        }
+        var rec = availableRegisters.find(function(rr) { return rr.register === reg; });
+        if (rec) {
+            applyRegisterMetadataToRow(tr, rec);
+        }
+        var factor = tr.cells[7] && tr.cells[7].querySelector('input') ? tr.cells[7].querySelector('input').value : '1';
+        var unit = tr.cells[8] && tr.cells[8].querySelector('input') ? tr.cells[8].querySelector('input').value : '';
+        var type = rec && rec.type ? rec.type : '16u';
+        var length = rec && rec.length ? parseInt(rec.length, 10) : 1;
+        if (!Number.isFinite(length) || length < 1) length = 1;
+        fetch('/register-value?addr=' + encodeURIComponent(reg) + '&count=' + encodeURIComponent(length))
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    var decoded = decodeRegisterValue(data.raws || [], type, factor, unit);
+                    var ts = data.lastUpdated ? new Date(data.lastUpdated * 1000).toLocaleTimeString() : '–';
+                    setRegisterValueCell(tr,
+                        '<div>' + decoded.display + '</div>' +
+                        '<div class="small text-muted">raw: ' + decoded.raw + ' | ' + ts + '</div>');
+                } else if (data.status === 'stale') {
+                    setRegisterValueCell(tr, '<span class="text-warning">stale</span>');
+                } else {
+                    setRegisterValueCell(tr, '<span class="text-muted">n/a</span>');
+                }
+            })
+            .catch(() => {
+                setRegisterValueCell(tr, '<span class="text-danger">Fehler</span>');
+            });
+    }
+    function updateVisibleRegisterValues() {
+        document.querySelectorAll('#mappingTable tbody tr').forEach(updateRegisterValueForRow);
+    }
+    function resyncMappingRowsFromCatalog() {
+        document.querySelectorAll('#mappingTable tbody tr').forEach(function(tr) {
+            var regInput = tr.cells[2] && tr.cells[2].querySelector('input');
+            if (!regInput) return;
+            var reg = parseInt(regInput.value, 10);
+            if (!Number.isFinite(reg) || reg <= 0) return;
+            var rec = availableRegisters.find(function(rr) { return rr.register === reg; });
+            if (rec) {
+                applyRegisterMetadataToRow(tr, rec);
+            }
+        });
     }
     function addMappingRow(entry) {
         var tbody = document.querySelector('#mappingTable tbody');
@@ -361,6 +518,7 @@
         tr.innerHTML = '<td></td>' +
             '<td></td>' +
             '<td><input class="form-control" value="' + (entry.register||'') + '"></td>' +
+            '<td class="small text-muted">–</td>' +
             '<td><input class="form-control" value="' + (entry.func||'03') + '"></td>' +
             '<td><input class="form-control" value="' + (entry.type||'16u') + '"></td>' +
             '<td><input class="form-control" value="' + (entry.order||'BE') + '"></td>' +
@@ -372,7 +530,17 @@
         // insert select into first cell
         var sel = makeNameSelect(entry.register);
         tr.cells[1].appendChild(sel);
+        if (entry.register) {
+            var rec = availableRegisters.find(function(rr) { return rr.register === Number(entry.register); });
+            if (rec) {
+                applyRegisterMetadataToRow(tr, rec);
+            }
+        }
+        tr.cells[2].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
+        tr.cells[7].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
+        tr.cells[8].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
         renumberRows();
+        updateRegisterValueForRow(tr);
     }
     function renumberRows() {
         var i = 1;
@@ -392,12 +560,12 @@
             arr.push({
                 name: selectedOpt ? (selectedOpt.getAttribute('data-name') || selectedOpt.textContent || '') : '',
                 register: regNum,
-                func: cells[3].firstChild.value,
-                type: cells[4].firstChild.value,
-                order: cells[5].firstChild.value,
-                factor: parseFloat(cells[6].firstChild.value) || 1,
-                unit: cells[7].firstChild.value,
-                timeout: parseInt(cells[8].firstChild.value,10) || 0
+                func: cells[4].firstChild.value,
+                type: cells[5].firstChild.value,
+                order: cells[6].firstChild.value,
+                factor: parseFloat(cells[7].firstChild.value) || 1,
+                unit: cells[8].firstChild.value,
+                timeout: parseInt(cells[9].firstChild.value,10) || 0
             });
         });
         return arr;
@@ -414,6 +582,7 @@
                 document.getElementById('pollInterval').value = cfg.pollInterval || 60;
                 document.getElementById('mappingEnabled').checked = cfg.mappingEnabled !== false;
                 document.getElementById('dhcpSwitch').value = cfg.dhcp === false ? 'static' : 'dhcp';
+                document.getElementById('hostname').value = cfg.hostname || 'modbusserver';
                 document.getElementById('ipAddr').value = cfg.ipAddr || '';
                 document.getElementById('netmask').value = cfg.netmask || '';
                 document.getElementById('gateway').value = cfg.gateway || '';
@@ -430,12 +599,16 @@
                 } else if (cfg.mappingEnabled) {
                     addMappingRow({});
                 }
+                resyncMappingRowsFromCatalog();
+                updateVisibleRegisterValues();
             })
             .catch(err => console.warn('config load failed', err));
     }
 
     window.addEventListener('load', function() {
         loadAvailableRegisters(loadConfig);
+        updateVisibleRegisterValues();
+        registerValueTimer = setInterval(updateVisibleRegisterValues, 10000);
     });
 
     document.getElementById('addRowBtn').addEventListener('click', () => {
@@ -450,6 +623,7 @@
             pollInterval: parseInt(document.getElementById('pollInterval').value, 10),
             mappingEnabled: document.getElementById('mappingEnabled').checked,
             dhcp: document.getElementById('dhcpSwitch').value === 'dhcp',
+            hostname: document.getElementById('hostname').value,
             ipAddr: document.getElementById('ipAddr').value,
             netmask: document.getElementById('netmask').value,
             gateway: document.getElementById('gateway').value,
@@ -515,6 +689,11 @@
                     document.getElementById('fw-version').textContent = 'v' + data.firmware_version;
                 }
                 document.getElementById('st-uptime').textContent = formatUptime(data.uptime_s || 0);
+                var networkText = data.ip || '–';
+                if (data.hostname) {
+                    networkText = data.ip ? (data.ip + ' (' + data.hostname + ')') : data.hostname;
+                }
+                document.getElementById('st-network').textContent = networkText;
 
                 var badge = document.getElementById('st-inverter');
                 var inverterName = data.inverter_name || '';

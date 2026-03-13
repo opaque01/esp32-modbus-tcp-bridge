@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define APP_FIRMWARE_VERSION "1.0.0"
+#define APP_FIRMWARE_VERSION "1.0.1"
 
 /* Maximum number of register-mapping entries stored in NVS */
 #define MAX_MAPPING_ENTRIES 32
@@ -20,6 +20,7 @@ typedef struct {
 
     /* LAN / PoE network */
     bool     dhcp;
+    char     hostname[32];
     char     ip_addr[16];
     char     netmask[16];
     char     gateway[16];

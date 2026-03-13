@@ -124,6 +124,6 @@ source /Users/opaque/esp/v5.5.1/esp-idf/export.sh
 
 ## 13) Wichtiger OTA-Hinweis fuer dieses Projekt
 
-Das Projekt nutzt aktuell 2MB Flash mit OTA-Partitionierung.
-Die Firmware ist relativ gross und hat wenig Reserve pro OTA-Slot.
-Wenn spaeter Features dazukommen, kann ein Wechsel auf 4MB-Layout sinnvoll werden.
+Das Projekt nutzt aktuell 16MB Flash mit OTA-Partitionierung.
+Die Partitionstabelle stellt zwei grosse OTA-Slots bereit.
+Damit bleibt fuer weitere Features deutlich mehr Reserve.

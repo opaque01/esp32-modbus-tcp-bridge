@@ -32,8 +32,57 @@
 
 static const char *TAG = "network";
 static esp_netif_t *s_eth_netif = NULL;
+static char s_active_hostname[32] = "modbusserver";
 static volatile bool s_captive_dns_running = false;
 static int s_captive_dns_sock = -1;
+
+static void build_hostname(char *dst, size_t dst_size, const char *src)
+{
+    const char *input = (src && src[0]) ? src : "modbusserver";
+    size_t di = 0;
+
+    for (size_t i = 0; input[i] != '\0' && di + 1 < dst_size; i++) {
+        char c = input[i];
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            dst[di++] = c;
+        } else if (c >= 'A' && c <= 'Z') {
+            dst[di++] = (char)(c - 'A' + 'a');
+        } else if ((c == '-' || c == '_' || c == ' ') && di > 0 && dst[di - 1] != '-') {
+            dst[di++] = '-';
+        }
+    }
+
+    while (di > 0 && dst[di - 1] == '-') {
+        di--;
+    }
+    dst[di] = '\0';
+
+    if (di == 0) {
+        strncpy(dst, "modbusserver", dst_size - 1);
+        dst[dst_size - 1] = '\0';
+    }
+}
+
+static void apply_dns_servers(esp_netif_t *netif)
+{
+    if (netif == NULL) {
+        return;
+    }
+
+    if (s_config.dns1[0] != '\0') {
+        esp_netif_dns_info_t dns = { 0 };
+        dns.ip.u_addr.ip4.addr = inet_addr(s_config.dns1);
+        dns.ip.type = IPADDR_TYPE_V4;
+        esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns);
+    }
+
+    if (s_config.dns2[0] != '\0') {
+        esp_netif_dns_info_t dns = { 0 };
+        dns.ip.u_addr.ip4.addr = inet_addr(s_config.dns2);
+        dns.ip.type = IPADDR_TYPE_V4;
+        esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns);
+    }
+}
 
 static bool mac_is_invalid(const uint8_t mac[6])
 {
@@ -75,7 +124,7 @@ static const eth_profile_t s_eth_profiles[] = {
 #define AP_CHANNEL        1
 #define AP_TIMEOUT_SECS   60
 #define AP_IP_ADDR        "192.168.4.1"
-#define HOSTNAME          "modbusserver"
+#define DEFAULT_HOSTNAME  "modbusserver"
 
 /* GPIO0 is the BOOT button (active LOW) */
 #define FACTORY_RESET_GPIO GPIO_NUM_0
@@ -290,7 +339,7 @@ static void wifi_ap_init(void)
 {
     esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
     if (ap_netif) {
-        esp_netif_set_hostname(ap_netif, HOSTNAME);
+        esp_netif_set_hostname(ap_netif, s_active_hostname);
     }
 
     wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -417,7 +466,7 @@ static esp_err_t ethernet_try_profile(const eth_profile_t *profile)
     esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
     esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_hdl));
-    esp_netif_set_hostname(eth_netif, HOSTNAME);
+    esp_netif_set_hostname(eth_netif, s_active_hostname);
     s_eth_netif = eth_netif;
 
     /* Register event handlers */
@@ -432,6 +481,7 @@ static esp_err_t ethernet_try_profile(const eth_profile_t *profile)
         ip_info.netmask.addr = inet_addr(s_config.netmask[0] ? s_config.netmask : "255.255.255.0");
         ip_info.gw.addr      = inet_addr(s_config.gateway);
         esp_netif_set_ip_info(eth_netif, &ip_info);
+        apply_dns_servers(eth_netif);
         ESP_LOGI(TAG, "Static IP: %s", s_config.ip_addr);
     } else {
         ESP_LOGI(TAG, "DHCP enabled");
@@ -471,6 +521,10 @@ static esp_err_t ethernet_init(void)
  * ----------------------------------------------------------------------- */
 esp_err_t network_init(void)
 {
+    build_hostname(s_active_hostname, sizeof(s_active_hostname), s_config.hostname);
+    strncpy(s_config.hostname, s_active_hostname, sizeof(s_config.hostname) - 1);
+    s_config.hostname[sizeof(s_config.hostname) - 1] = '\0';
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -484,6 +538,35 @@ esp_err_t network_init(void)
 
     /* Factory reset via GPIO0 long-press */
     xTaskCreate(gpio0_task, "gpio0_reset", 2048, NULL, 3, NULL);
+
+    return ESP_OK;
+}
+
+const char *network_get_hostname(void)
+{
+    return s_active_hostname;
+}
+
+esp_err_t network_get_ip(char *buf, size_t len)
+{
+    if (buf == NULL || len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    buf[0] = '\0';
+
+    if (s_eth_netif == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_netif_ip_info_t ip_info = { 0 };
+    esp_err_t err = esp_netif_get_ip_info(s_eth_netif, &ip_info);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (ip4addr_ntoa_r((const ip4_addr_t *)&ip_info.ip, buf, (int)len) == NULL) {
+        return ESP_FAIL;
+    }
 
     return ESP_OK;
 }

@@ -3,6 +3,7 @@
 #include "modbus_server.h"
 #include "reg_cache.h"
 #include "config.h"
+#include "network.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -208,8 +209,16 @@ esp_err_t status_get_handler(httpd_req_t *req)
     /* Header */
     char inverter_name[64];
     char inverter_name_esc[128];
+    char hostname_esc[80];
+    char ip_esc[40];
+    char current_ip[16] = "";
     read_inverter_name(inverter_name, sizeof(inverter_name));
     json_escape(inverter_name, inverter_name_esc, sizeof(inverter_name_esc));
+    json_escape(network_get_hostname(), hostname_esc, sizeof(hostname_esc));
+    if (network_get_ip(current_ip, sizeof(current_ip)) != ESP_OK) {
+        current_ip[0] = '\0';
+    }
+    json_escape(current_ip, ip_esc, sizeof(ip_esc));
 
     char buf[512];
     char client_ips[16][16];
@@ -218,6 +227,8 @@ esp_err_t status_get_handler(httpd_req_t *req)
     snprintf(buf, sizeof(buf),
         "{\"uptime_s\":%lld,"
         "\"firmware_version\":\"%s\","
+        "\"hostname\":\"%s\","
+        "\"ip\":\"%s\","
         "\"inverter_connected\":%s,"
         "\"inverter_name\":\"%s\","
         "\"last_poll_ts\":%lld,"
@@ -225,6 +236,8 @@ esp_err_t status_get_handler(httpd_req_t *req)
         "\"client_ips\":[",
         (long long)uptime_s,
         APP_FIRMWARE_VERSION,
+        hostname_esc,
+        ip_esc,
         mb_inverter_connected ? "true" : "false",
         inverter_name_esc,
         (long long)mb_last_poll_ts,

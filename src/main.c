@@ -31,6 +31,8 @@ extern const char _binary_bootstrap_min_css_start[] asm("_binary_bootstrap_min_c
 extern const char _binary_bootstrap_min_css_end[] asm("_binary_bootstrap_min_css_end");
 extern const char _binary_bootstrap_bundle_min_js_start[] asm("_binary_bootstrap_bundle_min_js_start");
 extern const char _binary_bootstrap_bundle_min_js_end[] asm("_binary_bootstrap_bundle_min_js_end");
+extern const uint8_t _binary_register_catalog_json_gz_start[] asm("_binary_register_catalog_json_gz_start");
+extern const uint8_t _binary_register_catalog_json_gz_end[] asm("_binary_register_catalog_json_gz_end");
 extern const char _binary_favicon_ico_start[] asm("_binary_favicon_ico_start");
 extern const char _binary_favicon_ico_end[] asm("_binary_favicon_ico_end");
 
@@ -58,6 +60,7 @@ static void load_config(void)
         s_config.poll_interval  = 60;
         s_config.mapping_enabled = true;
         s_config.dhcp           = true;
+        strcpy(s_config.hostname, "modbusserver");
         strcpy(s_config.ap_password, "ModBus");
         return;
     }
@@ -76,6 +79,10 @@ static void load_config(void)
     if (nvs_get_u8(h, "mapping", &flag) == ESP_OK) s_config.mapping_enabled = flag;
     if (nvs_get_u8(h, "dhcp",    &flag) == ESP_OK) s_config.dhcp            = flag;
 
+    len = sizeof(s_config.hostname);
+    if (nvs_get_str(h, "hostname", s_config.hostname, &len) != ESP_OK) {
+        strcpy(s_config.hostname, "modbusserver");
+    }
     len = sizeof(s_config.ip_addr);  nvs_get_str(h, "ip_addr",  s_config.ip_addr,  &len);
     len = sizeof(s_config.netmask);  nvs_get_str(h, "netmask",  s_config.netmask,  &len);
     len = sizeof(s_config.gateway);  nvs_get_str(h, "gateway",  s_config.gateway,  &len);
@@ -123,6 +130,7 @@ static void save_config(void)
     nvs_set_u32(h, "poll_intv",   s_config.poll_interval);
     nvs_set_u8 (h, "mapping",    (uint8_t)s_config.mapping_enabled);
     nvs_set_u8 (h, "dhcp",       (uint8_t)s_config.dhcp);
+    nvs_set_str(h, "hostname",  s_config.hostname);
     nvs_set_str(h, "ip_addr",   s_config.ip_addr);
     nvs_set_str(h, "netmask",   s_config.netmask);
     nvs_set_str(h, "gateway",   s_config.gateway);
@@ -170,6 +178,7 @@ static esp_err_t config_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "pollInterval", (double)s_config.poll_interval);
     cJSON_AddBoolToObject(root, "mappingEnabled", s_config.mapping_enabled);
     cJSON_AddBoolToObject(root, "dhcp", s_config.dhcp);
+    cJSON_AddStringToObject(root, "hostname", s_config.hostname);
     cJSON_AddStringToObject(root, "ipAddr", s_config.ip_addr);
     cJSON_AddStringToObject(root, "netmask", s_config.netmask);
     cJSON_AddStringToObject(root, "gateway", s_config.gateway);
@@ -261,6 +270,11 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     if (cJSON_IsBool(item)) s_config.dhcp = cJSON_IsTrue(item);
     if (cJSON_IsNumber(item)) s_config.dhcp = (item->valuedouble != 0);
 
+    item = cJSON_GetObjectItemCaseSensitive(root, "hostname");
+    if (cJSON_IsString(item) && item->valuestring) {
+        strncpy(s_config.hostname, item->valuestring, sizeof(s_config.hostname) - 1);
+        s_config.hostname[sizeof(s_config.hostname) - 1] = '\0';
+    }
     item = cJSON_GetObjectItemCaseSensitive(root, "ipAddr");
     if (cJSON_IsString(item) && item->valuestring) {
         strncpy(s_config.ip_addr, item->valuestring, sizeof(s_config.ip_addr) - 1);
@@ -335,103 +349,88 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-typedef struct {
-    const char *device;
-    const char *name;
-    uint16_t register_addr;
-    float factor;
-    const char *unit;
-    const char *type;
-} register_option_t;
-
-/* Registers from specs/huawei_registers.md, specs/huawei_inverter_registers_full.md
- * and specs/huawei_wallbox_registers.md */
 static esp_err_t registers_get_handler(httpd_req_t *req)
 {
-    static const register_option_t options[] = {
-        { "Inverter", "Firmware Name", 30000, 1.0f, "", "string" },
-        { "Inverter", "Seriennummer", 30015, 1.0f, "", "string" },
-        { "Inverter", "Modell-ID", 30070, 1.0f, "", "16u" },
-        { "Inverter", "Anzahl PV-Strings", 30071, 1.0f, "", "16u" },
-        { "Inverter", "Anzahl MPP-Tracker", 30072, 1.0f, "", "16u" },
-        { "Inverter", "Nennleistung", 30073, 1.0f, "W", "16u" },
-        { "Inverter", "Status1", 32000, 1.0f, "", "16u" },
-        { "Inverter", "Status2", 32002, 1.0f, "", "16u" },
-        { "Inverter", "Status3", 32003, 1.0f, "", "32u" },
-        { "Inverter", "Alarm1", 32008, 1.0f, "", "16u" },
-        { "Inverter", "Alarm2", 32009, 1.0f, "", "16u" },
-        { "Inverter", "Alarm3", 32010, 1.0f, "", "16u" },
-        { "Inverter", "PV Spannung 1", 32014, 0.1f, "V", "16u" },
-        { "Inverter", "PV Strom 1", 32015, 0.01f, "A", "16s" },
-        { "Inverter", "PV Spannung 2", 32016, 0.1f, "V", "16u" },
-        { "Inverter", "PV Strom 2", 32017, 0.01f, "A", "16s" },
-        { "Inverter", "AC Eingangsleistung", 32064, 1.0f, "W", "32u" },
-        { "Inverter", "AC Spannung R", 32066, 0.1f, "V", "16u" },
-        { "Inverter", "AC Spannung R (3-ph)", 32069, 0.1f, "V", "16u" },
-        { "Inverter", "AC Spannung S", 32070, 0.1f, "V", "16u" },
-        { "Inverter", "AC Spannung T", 32071, 0.1f, "V", "16u" },
-        { "Inverter", "AC Strom R", 32072, 0.001f, "A", "16u" },
-        { "Inverter", "AC Wirkleistung", 32080, 1.0f, "W", "16s" },
-        { "Inverter", "AC Frequenz", 32085, 0.01f, "Hz", "16u" },
-        { "Inverter", "Effizienz", 32086, 0.01f, "%", "16u" },
-        { "Inverter", "Innentemperatur", 32087, 0.1f, "C", "16s" },
-        { "Inverter", "Isolation", 32088, 1.0f, "", "16u" },
-        { "Inverter", "DeviceStatus", 32089, 1.0f, "", "16u" },
-        { "Inverter", "Fehlercode", 32090, 1.0f, "", "16u" },
-        { "Inverter", "Wh Gesamt", 32106, 10.0f, "Wh", "32u" },
-        { "Inverter", "Wh Heute", 32114, 10.0f, "Wh", "32u" },
-        { "Batterie", "Batterie-Status", 37000, 1.0f, "", "16u" },
-        { "Batterie", "Batterie-Leistung", 37001, 1.0f, "W", "32s" },
-        { "Batterie", "BAT SOC", 37004, 0.1f, "%", "16u" },
-        { "Batterie", "Einspeisung/Bezug", 37113, 0.01f, "kWh", "32s" },
-        { "Batterie", "Wh Export Gesamt", 37119, 10.0f, "Wh", "32u" },
-        { "Batterie", "Wh Import Gesamt", 37121, 10.0f, "Wh", "32u" },
-        { "Batterie", "Batterie-Datenblock", 38210, 1.0f, "", "block" },
-        { "Wallbox", "Inverter total absorbed energy", 30322, 0.01f, "kWh", "64u" },
-        { "Wallbox", "Energy charged today", 30324, 0.01f, "kWh", "32u" },
-        { "Wallbox", "Total charged energy", 30326, 0.01f, "kWh", "64u" },
-        { "Wallbox", "Energy discharged today", 30328, 0.01f, "kWh", "32u" },
-        { "Wallbox", "Total discharged energy", 30330, 0.01f, "kWh", "64u" },
-        { "Wallbox", "ESS chargeable energy", 30332, 0.01f, "kWh", "32u" },
-        { "Wallbox", "ESS dischargeable energy", 30334, 0.01f, "kWh", "32u" },
-        { "Wallbox", "Rated ESS capacity", 30336, 0.01f, "kWh", "32u" },
-        { "Wallbox", "Consumption today", 30338, 0.01f, "kWh", "32u" },
-        { "Wallbox", "Total energy consumption", 30340, 0.01f, "kWh", "64u" },
-        { "Wallbox", "Feed-in to grid today", 30342, 0.01f, "kWh", "32u" }
-    };
+    size_t len = (size_t)(_binary_register_catalog_json_gz_end - _binary_register_catalog_json_gz_start);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)_binary_register_catalog_json_gz_start, (ssize_t)len);
+}
 
-    cJSON *root = cJSON_CreateArray();
+static esp_err_t register_value_get_handler(httpd_req_t *req)
+{
+    char query[64];
+    char addr_buf[16];
+    char count_buf[16];
+    uint16_t addr = 0;
+    uint16_t count = 1;
+    time_t last_updated = 0;
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "addr", addr_buf, sizeof(addr_buf)) != ESP_OK) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "Missing addr parameter");
+        return ESP_FAIL;
+    }
+
+    addr = (uint16_t)strtoul(addr_buf, NULL, 10);
+    if (httpd_query_key_value(query, "count", count_buf, sizeof(count_buf)) == ESP_OK) {
+        unsigned long parsed = strtoul(count_buf, NULL, 10);
+        if (parsed >= 1 && parsed <= 16) {
+            count = (uint16_t)parsed;
+        }
+    }
+
+    cJSON *root = cJSON_CreateObject();
     if (!root) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_sendstr(req, "Out of memory");
         return ESP_FAIL;
     }
 
-    for (size_t i = 0; i < sizeof(options) / sizeof(options[0]); i++) {
-        cJSON *entry = cJSON_CreateObject();
-        if (!entry) continue;
-        cJSON_AddStringToObject(entry, "device", options[i].device);
-        cJSON_AddStringToObject(entry, "name", options[i].name);
-        cJSON_AddNumberToObject(entry, "register", options[i].register_addr);
-        cJSON_AddNumberToObject(entry, "factor", options[i].factor);
-        cJSON_AddStringToObject(entry, "unit", options[i].unit);
-        cJSON_AddNumberToObject(entry, "func", 3);
-        cJSON_AddStringToObject(entry, "type", options[i].type);
-        cJSON_AddStringToObject(entry, "order", "BE");
-        cJSON_AddItemToArray(root, entry);
+    cJSON_AddNumberToObject(root, "register", addr);
+    cJSON_AddNumberToObject(root, "count", count);
+
+    cJSON *raws = cJSON_CreateArray();
+    int rc = REG_CACHE_OK;
+    for (uint16_t i = 0; i < count; i++) {
+        uint16_t raw = 0;
+        time_t raw_updated = 0;
+        rc = reg_cache_lookup_with_meta((uint16_t)(addr + i), &raw, &raw_updated);
+        if (rc != REG_CACHE_OK) {
+            break;
+        }
+        if (raw_updated > last_updated) {
+            last_updated = raw_updated;
+        }
+        cJSON_AddItemToArray(raws, cJSON_CreateNumber(raw));
     }
 
-    char *regs_json = cJSON_PrintUnformatted(root);
+    if (rc == REG_CACHE_OK) {
+        cJSON_AddStringToObject(root, "status", "ok");
+        cJSON_AddItemToObject(root, "raws", raws);
+        cJSON_AddNumberToObject(root, "lastUpdated", (double)last_updated);
+    } else if (rc == REG_CACHE_STALE) {
+        cJSON_Delete(raws);
+        cJSON_AddStringToObject(root, "status", "stale");
+    } else {
+        cJSON_Delete(raws);
+        cJSON_AddStringToObject(root, "status", "not_found");
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
-    if (!regs_json) {
+    if (!json) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_sendstr(req, "Out of memory");
         return ESP_FAIL;
     }
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, regs_json, HTTPD_RESP_USE_STRLEN);
-    free(regs_json);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    free(json);
     return ESP_OK;
 }
 
@@ -520,6 +519,7 @@ static esp_err_t reboot_post_handler(httpd_req_t *req)
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_send(req, _binary_ui_html_start,
                     (ssize_t)embedded_text_len(_binary_ui_html_start, _binary_ui_html_end));
     return ESP_OK;
@@ -536,6 +536,7 @@ static esp_err_t captive_redirect_handler(httpd_req_t *req)
 static esp_err_t bootstrap_css_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/css; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_send(req, _binary_bootstrap_min_css_start,
                     (ssize_t)embedded_text_len(_binary_bootstrap_min_css_start, _binary_bootstrap_min_css_end));
     return ESP_OK;
@@ -544,6 +545,7 @@ static esp_err_t bootstrap_css_get_handler(httpd_req_t *req)
 static esp_err_t bootstrap_js_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/javascript; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_send(req, _binary_bootstrap_bundle_min_js_start,
                     (ssize_t)embedded_text_len(_binary_bootstrap_bundle_min_js_start, _binary_bootstrap_bundle_min_js_end));
     return ESP_OK;
@@ -552,6 +554,7 @@ static esp_err_t bootstrap_js_get_handler(httpd_req_t *req)
 static esp_err_t favicon_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "image/x-icon");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     httpd_resp_send(req, _binary_favicon_ico_start,
                     _binary_favicon_ico_end - _binary_favicon_ico_start);
     return ESP_OK;
@@ -561,6 +564,10 @@ static void start_webserver(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.max_uri_handlers = 20;
+    cfg.max_open_sockets = 10;
+    cfg.lru_purge_enable = true;
+    cfg.recv_wait_timeout = 5;
+    cfg.send_wait_timeout = 5;
     httpd_handle_t server = NULL;
 
     if (httpd_start(&server, &cfg) != ESP_OK) {
@@ -583,6 +590,7 @@ static void start_webserver(void)
         { .uri = "/config",    .method = HTTP_GET,  .handler = config_get_handler    },
         { .uri = "/config",    .method = HTTP_POST, .handler = config_post_handler   },
         { .uri = "/registers", .method = HTTP_GET,  .handler = registers_get_handler },
+        { .uri = "/register-value", .method = HTTP_GET, .handler = register_value_get_handler },
         { .uri = "/status",    .method = HTTP_GET,  .handler = status_get_handler    },
         { .uri = "/ota",       .method = HTTP_POST, .handler = ota_post_handler      },
         { .uri = "/reboot",    .method = HTTP_POST, .handler = reboot_post_handler   },

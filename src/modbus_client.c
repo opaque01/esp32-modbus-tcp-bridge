@@ -12,6 +12,7 @@
 #include "config.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"
 #include <string.h>
@@ -29,9 +30,30 @@ volatile bool   mb_inverter_connected  = false;
 #define MB_BLOCK_DELAY_MS    300
 #define MB_BACKOFF_MAX_S     900
 #define MB_CHUNK_REGS_MAX     72
+#define MB_CACHE_DROP_FAILS    3
 
 static int fc03_read(int sock, uint16_t start_reg, uint16_t count,
                      uint16_t *out_data, uint8_t unit_id);
+static int connect_to_inverter(void);
+static int mb_transaction(int sock, uint8_t unit_id, const uint8_t *req_pdu, uint16_t req_pdu_len,
+                          uint8_t *resp_pdu, size_t resp_cap, uint16_t *resp_pdu_len);
+static int ensure_upstream_connected_locked(void);
+static void reset_upstream_locked(void);
+static int run_transaction_locked(uint8_t unit_id, const uint8_t *req_pdu, uint16_t req_pdu_len,
+                                  uint8_t *resp_pdu, size_t resp_cap, uint16_t *resp_pdu_len);
+static void ensure_client_lock(void);
+
+static SemaphoreHandle_t s_client_lock = NULL;
+static int s_upstream_sock = -1;
+
+static bool should_drop_cache(uint8_t fail_count)
+{
+    (void)fail_count;
+    /* The Huawei upstream is known to close the port intermittently.
+     * Keep the last valid cache instead of turning all HA entities unavailable.
+     */
+    return false;
+}
 
 static uint32_t compute_backoff_s(uint32_t base_s, uint8_t fail_count)
 {
@@ -94,6 +116,13 @@ static int recv_all(int sock, void *buf, int len)
     return total;
 }
 
+static void ensure_client_lock(void)
+{
+    if (s_client_lock == NULL) {
+        s_client_lock = xSemaphoreCreateMutex();
+    }
+}
+
 /*
  * Send an FC03 "Read Holding Registers" request and receive the response.
  * Returns count (number of registers read) on success, -1 on error.
@@ -104,45 +133,17 @@ static int recv_all(int sock, void *buf, int len)
 static int fc03_read(int sock, uint16_t start_reg, uint16_t count,
                      uint16_t *out_data, uint8_t unit_id)
 {
-    /* Transaction ID — monotonically incremented, wraps on overflow */
-    static uint16_t s_tid = 0;
-    s_tid++;
-
-    uint8_t req[12];
-    req[0]  = (s_tid >> 8) & 0xFF;
-    req[1]  =  s_tid & 0xFF;
-    req[2]  = 0x00;  /* Protocol ID high */
-    req[3]  = 0x00;  /* Protocol ID low  */
-    req[4]  = 0x00;  /* Length high (PDU = 6 bytes) */
-    req[5]  = 0x06;  /* Length low                  */
-    req[6]  = unit_id;
-    req[7]  = 0x03;  /* FC03 */
-    req[8]  = (start_reg >> 8) & 0xFF;
-    req[9]  =  start_reg & 0xFF;
-    req[10] = (count >> 8) & 0xFF;
-    req[11] =  count & 0xFF;
-
-    if (send(sock, req, sizeof(req), 0) != (int)sizeof(req)) {
-        ESP_LOGE(TAG, "send() failed: %d", errno);
-        return -1;
-    }
-
-    /* Read MBAP header (7 bytes) */
-    uint8_t mbap[7];
-    if (recv_all(sock, mbap, 7) != 7) {
-        ESP_LOGE(TAG, "recv MBAP failed");
-        return -1;
-    }
-
-    uint16_t resp_pdu_len = (((uint16_t)mbap[4] << 8) | mbap[5]) - 1; /* -1 for unit_id */
-    if (resp_pdu_len < 2 || resp_pdu_len > 255) {
-        ESP_LOGE(TAG, "invalid PDU length: %u", resp_pdu_len);
-        return -1;
-    }
-
+    uint8_t req_pdu[5];
     uint8_t pdu[256];
-    if (recv_all(sock, pdu, resp_pdu_len) != resp_pdu_len) {
-        ESP_LOGE(TAG, "recv PDU failed");
+    uint16_t resp_pdu_len = 0;
+
+    req_pdu[0] = 0x03;
+    req_pdu[1] = (start_reg >> 8) & 0xFF;
+    req_pdu[2] = start_reg & 0xFF;
+    req_pdu[3] = (count >> 8) & 0xFF;
+    req_pdu[4] = count & 0xFF;
+
+    if (mb_transaction(sock, unit_id, req_pdu, sizeof(req_pdu), pdu, sizeof(pdu), &resp_pdu_len) != 0) {
         return -1;
     }
 
@@ -170,6 +171,99 @@ static int fc03_read(int sock, uint16_t start_reg, uint16_t count,
         out_data[i] = ((uint16_t)pdu[2 + i * 2] << 8) | pdu[2 + i * 2 + 1];
     }
     return count;
+}
+
+static int mb_transaction(int sock, uint8_t unit_id, const uint8_t *req_pdu, uint16_t req_pdu_len,
+                          uint8_t *resp_pdu, size_t resp_cap, uint16_t *resp_pdu_len)
+{
+    static uint16_t s_tid = 0;
+    uint8_t req[260];
+
+    if (!req_pdu || req_pdu_len == 0 || !resp_pdu || !resp_pdu_len || resp_cap == 0 || req_pdu_len > 253) {
+        return -1;
+    }
+
+    s_tid++;
+    req[0] = (s_tid >> 8) & 0xFF;
+    req[1] = s_tid & 0xFF;
+    req[2] = 0x00;
+    req[3] = 0x00;
+    req[4] = (uint8_t)(((uint16_t)(req_pdu_len + 1U) >> 8) & 0xFF);
+    req[5] = (uint8_t)((req_pdu_len + 1U) & 0xFF);
+    req[6] = unit_id;
+    memcpy(req + 7, req_pdu, req_pdu_len);
+
+    if (send(sock, req, 7 + req_pdu_len, 0) != (int)(7 + req_pdu_len)) {
+        ESP_LOGE(TAG, "send() failed: %d", errno);
+        return -1;
+    }
+
+    uint8_t mbap[7];
+    if (recv_all(sock, mbap, 7) != 7) {
+        ESP_LOGE(TAG, "recv MBAP failed");
+        return -1;
+    }
+
+    uint16_t resp_len = ((uint16_t)mbap[4] << 8) | mbap[5];
+    if (resp_len < 2) {
+        ESP_LOGE(TAG, "invalid MBAP length: %u", resp_len);
+        return -1;
+    }
+
+    uint16_t pdu_len = resp_len - 1;
+    if (pdu_len > resp_cap) {
+        ESP_LOGE(TAG, "response PDU too large: %u", pdu_len);
+        return -1;
+    }
+
+    if (recv_all(sock, resp_pdu, pdu_len) != pdu_len) {
+        ESP_LOGE(TAG, "recv PDU failed");
+        return -1;
+    }
+
+    *resp_pdu_len = pdu_len;
+    return 0;
+}
+
+static void reset_upstream_locked(void)
+{
+    if (s_upstream_sock >= 0) {
+        close(s_upstream_sock);
+        s_upstream_sock = -1;
+    }
+}
+
+static int ensure_upstream_connected_locked(void)
+{
+    if (s_upstream_sock >= 0) {
+        return s_upstream_sock;
+    }
+
+    s_upstream_sock = connect_to_inverter();
+    if (s_upstream_sock < 0) {
+        return -1;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(MB_CONNECT_SETTLE_MS));
+    return s_upstream_sock;
+}
+
+static int run_transaction_locked(uint8_t unit_id, const uint8_t *req_pdu, uint16_t req_pdu_len,
+                                  uint8_t *resp_pdu, size_t resp_cap, uint16_t *resp_pdu_len)
+{
+    if (ensure_upstream_connected_locked() < 0) {
+        return -1;
+    }
+
+    int rc = mb_transaction(s_upstream_sock, unit_id, req_pdu, req_pdu_len, resp_pdu, resp_cap, resp_pdu_len);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Upstream transaction failed FC=0x%02X unit=%u -> reconnect next cycle",
+                 req_pdu_len > 0 ? req_pdu[0] : 0x00, unit_id);
+        reset_upstream_locked();
+        return -1;
+    }
+
+    return 0;
 }
 
 static int connect_to_inverter(void)
@@ -254,8 +348,177 @@ static bool poll_inverter(int sock)
     } else {
         ESP_LOGD(TAG, "Block D (38210, 24) not available — skipping");
     }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 37200, 1, tmp, uid)) {
+        reg_cache_write_block(4, tmp, 1);
+    } else {
+        ESP_LOGD(TAG, "Block E (37200, 1) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 37738, 50, tmp, uid)) {
+        reg_cache_write_block(5, tmp, 50);
+    } else {
+        ESP_LOGD(TAG, "Block F (37738, 50) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 42900, 1, tmp, uid)) {
+        reg_cache_write_block(6, tmp, 1);
+    } else {
+        ESP_LOGD(TAG, "Block G (42900, 1) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 43006, 1, tmp, uid)) {
+        reg_cache_write_block(7, tmp, 1);
+    } else {
+        ESP_LOGD(TAG, "Block H (43006, 1) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 47000, 1, tmp, uid)) {
+        reg_cache_write_block(8, tmp, 1);
+    } else {
+        ESP_LOGD(TAG, "Block I (47000, 1) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 47089, 1, tmp, uid)) {
+        reg_cache_write_block(9, tmp, 1);
+    } else {
+        ESP_LOGD(TAG, "Block J (47089, 1) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 47954, 66, tmp, uid)) {
+        reg_cache_write_block(10, tmp, 66);
+    } else {
+        ESP_LOGD(TAG, "Block K (47954, 66) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 40120, 35, tmp, uid)) {
+        reg_cache_write_block(11, tmp, 35);
+    } else {
+        ESP_LOGD(TAG, "Block L (40120, 35) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 47075, 28, tmp, uid)) {
+        reg_cache_write_block(12, tmp, 28);
+    } else {
+        ESP_LOGD(TAG, "Block M (47075, 28) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 47242, 58, tmp, uid)) {
+        reg_cache_write_block(13, tmp, 58);
+    } else {
+        ESP_LOGD(TAG, "Block N (47242, 58) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 47415, 4, tmp, uid)) {
+        reg_cache_write_block(14, tmp, 4);
+    } else {
+        ESP_LOGD(TAG, "Block O (47415, 4) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 47589, 2, tmp, uid)) {
+        reg_cache_write_block(15, tmp, 2);
+    } else {
+        ESP_LOGD(TAG, "Block P (47589, 2) not available — skipping");
+    }
+    vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
+
+    if (read_block_chunked(sock, 42054, 2, tmp, uid)) {
+        reg_cache_write_block(16, tmp, 2);
+    } else {
+        ESP_LOGD(TAG, "Block Q (42054, 2) not available — skipping");
+    }
 
     return essential_ok;
+}
+
+int modbus_client_forward_write(uint8_t unit_id, const uint8_t *pdu, uint16_t pdu_len,
+                                uint8_t *resp_pdu, size_t resp_cap, uint16_t *resp_pdu_len)
+{
+    int rc;
+
+    ensure_client_lock();
+    if (s_client_lock == NULL) {
+        return -1;
+    }
+
+    if (xSemaphoreTake(s_client_lock, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Write request lock timeout");
+        return -1;
+    }
+
+    rc = run_transaction_locked(unit_id, pdu, pdu_len, resp_pdu, resp_cap, resp_pdu_len);
+    xSemaphoreGive(s_client_lock);
+
+    if (rc == 0) {
+        mb_inverter_connected = true;
+    } else {
+        mb_inverter_connected = false;
+    }
+    return rc;
+}
+
+int modbus_client_forward_pdu(uint8_t unit_id, const uint8_t *pdu, uint16_t pdu_len,
+                              uint8_t *resp_pdu, size_t resp_cap, uint16_t *resp_pdu_len)
+{
+    int rc;
+
+    ensure_client_lock();
+    if (s_client_lock == NULL) {
+        return -1;
+    }
+
+    if (xSemaphoreTake(s_client_lock, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Generic request lock timeout");
+        return -1;
+    }
+
+    rc = run_transaction_locked(unit_id, pdu, pdu_len, resp_pdu, resp_cap, resp_pdu_len);
+    xSemaphoreGive(s_client_lock);
+
+    if (rc == 0) {
+        mb_inverter_connected = true;
+    } else {
+        mb_inverter_connected = false;
+    }
+    return rc;
+}
+
+int modbus_client_forward_read(uint8_t unit_id, const uint8_t *pdu, uint16_t pdu_len,
+                               uint8_t *resp_pdu, size_t resp_cap, uint16_t *resp_pdu_len)
+{
+    int rc;
+
+    ensure_client_lock();
+    if (s_client_lock == NULL) {
+        return -1;
+    }
+
+    if (xSemaphoreTake(s_client_lock, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Read-through lock timeout");
+        return -1;
+    }
+
+    rc = run_transaction_locked(unit_id, pdu, pdu_len, resp_pdu, resp_cap, resp_pdu_len);
+    xSemaphoreGive(s_client_lock);
+
+    if (rc == 0 && resp_pdu_len != NULL && *resp_pdu_len > 0 && (resp_pdu[0] & 0x80) == 0) {
+        mb_inverter_connected = true;
+    } else if (rc != 0) {
+        mb_inverter_connected = false;
+    }
+    return rc;
 }
 
 static void modbus_client_task(void *pvParameters)
@@ -267,44 +530,54 @@ static void modbus_client_task(void *pvParameters)
         uint32_t base_s = s_config.poll_interval ? s_config.poll_interval : 60;
         uint32_t wait_s = compute_backoff_s(base_s, fail_count);
         uint32_t jitter_ms = (esp_random() % 3000U);
+        ensure_client_lock();
+        if (s_client_lock == NULL) {
+            ESP_LOGE(TAG, "Failed to create Modbus client lock");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
 
-        int sock = connect_to_inverter();
-        if (sock < 0) {
+        if (xSemaphoreTake(s_client_lock, pdMS_TO_TICKS(10000)) != pdTRUE) {
+            ESP_LOGW(TAG, "Poll lock timeout");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        if (ensure_upstream_connected_locked() < 0) {
+            xSemaphoreGive(s_client_lock);
             mb_inverter_connected = false;
-            reg_cache_invalidate_all();
             if (fail_count < 8) fail_count++;
+            if (should_drop_cache(fail_count)) {
+                reg_cache_invalidate_all();
+            }
             ESP_LOGW(TAG, "Connect failed (%u) -> next try in %us", fail_count, wait_s);
             vTaskDelay(pdMS_TO_TICKS(wait_s * 1000U + jitter_ms));
             continue;
         }
-        vTaskDelay(pdMS_TO_TICKS(MB_CONNECT_SETTLE_MS));
-
-        /* Poll loop — stay connected, retry on failure */
-        while (1) {
-            if (poll_inverter(sock)) {
-                mb_inverter_connected = true;
-                mb_last_poll_ts       = time(NULL);
-                fail_count            = 0;
-                ESP_LOGI(TAG, "Poll OK — cache updated");
-                wait_s = base_s;
-            } else {
-                mb_inverter_connected = false;
+        if (poll_inverter(s_upstream_sock)) {
+            mb_inverter_connected = true;
+            mb_last_poll_ts       = time(NULL);
+            fail_count            = 0;
+            ESP_LOGI(TAG, "Poll OK — cache updated");
+            wait_s = base_s;
+        } else {
+            mb_inverter_connected = false;
+            reset_upstream_locked();
+            if (fail_count < 8) fail_count++;
+            if (should_drop_cache(fail_count)) {
                 reg_cache_invalidate_all();
-                if (fail_count < 8) fail_count++;
-                wait_s = compute_backoff_s(base_s, fail_count);
-                ESP_LOGE(TAG, "Poll failed (%u) — reconnecting after %us", fail_count, wait_s);
-                break;
             }
-            vTaskDelay(pdMS_TO_TICKS(wait_s * 1000U + jitter_ms));
+            wait_s = compute_backoff_s(base_s, fail_count);
+            ESP_LOGE(TAG, "Poll failed (%u) — reconnecting after %us", fail_count, wait_s);
         }
-
-        close(sock);
+        xSemaphoreGive(s_client_lock);
         vTaskDelay(pdMS_TO_TICKS(wait_s * 1000U + jitter_ms));
     }
 }
 
 void modbus_client_start(void)
 {
+    ensure_client_lock();
     xTaskCreate(modbus_client_task, "mb_client", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "Modbus TCP client started");
 }

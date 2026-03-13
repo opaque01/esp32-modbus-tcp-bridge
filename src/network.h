@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stddef.h>
 
 /*
  * network_init() — call once from app_main() before starting Modbus tasks.
@@ -16,3 +17,5 @@
  * GPIO0 factory-reset task: 10-second press erases NVS and reboots.
  */
 esp_err_t network_init(void);
+const char *network_get_hostname(void);
+esp_err_t network_get_ip(char *buf, size_t len);

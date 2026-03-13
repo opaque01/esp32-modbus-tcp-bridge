@@ -27,4 +27,5 @@ idf_component_register(
         "bootstrap.bundle.min.js"
     EMBED_FILES
         "favicon.ico"
+        "register_catalog.json.gz"
 )
