@@ -113,6 +113,7 @@
             </form>
             <div id="mappingSection">
                 <h4>Register‑Mapping</h4>
+                <div class="form-text mb-2">Die Spalte <strong>Wert</strong> zeigt den dekodierten Quellwert aus dem Huawei-Cache. Der <strong>Faktor</strong> wirkt nur auf den ausgegebenen Rohwert des Mapping-Registers.</div>
                 <table class="table table-sm" id="mappingTable">
                 <thead>
                 <tr>
@@ -371,14 +372,18 @@
         });
         return sel;
     }
-    function applyRegisterMetadataToRow(tr, rec) {
+    function applyRegisterMetadataToRow(tr, rec, opts) {
         if (!tr || !rec) return;
+        opts = opts || {};
         tr.cells[2].firstChild.value = rec.register;
         if (rec.func !== undefined) tr.cells[4].firstChild.value = rec.func;
         if (rec.type !== undefined) tr.cells[5].firstChild.value = rec.type;
         if (rec.order !== undefined) tr.cells[6].firstChild.value = rec.order;
-        tr.cells[7].firstChild.value = rec.factor || 1;
-        tr.cells[8].firstChild.value = rec.unit || '';
+        /* Mapping factor is an explicit output multiplier and must not be derived
+           from the register catalog scaling used for display decoding. */
+        if (!opts.preserveUnit) {
+            tr.cells[8].firstChild.value = rec.unit || '';
+        }
     }
     function applyScale(value, factor) {
         var f = parseFloat(factor);
@@ -460,6 +465,14 @@
             cell.innerHTML = html;
         }
     }
+    function computeMappedRaw(raws, mappingFactor) {
+        if (!Array.isArray(raws) || raws.length === 0) return null;
+        var raw = Number(raws[0]);
+        if (!Number.isFinite(raw)) return null;
+        var f = parseFloat(mappingFactor);
+        if (!isFinite(f) || f === 0) f = 1;
+        return Math.round(raw * f);
+    }
     function updateRegisterValueForRow(tr) {
         if (!tr) return;
         var regInput = tr.cells[2] && tr.cells[2].querySelector('input');
@@ -471,9 +484,14 @@
         }
         var rec = availableRegisters.find(function(rr) { return rr.register === reg; });
         if (rec) {
-            applyRegisterMetadataToRow(tr, rec);
+            applyRegisterMetadataToRow(tr, rec, { preserveFactor: true, preserveUnit: true });
         }
-        var factor = tr.cells[7] && tr.cells[7].querySelector('input') ? tr.cells[7].querySelector('input').value : '1';
+        var displayFactor = rec && rec.factor !== undefined
+            ? rec.factor
+            : (tr.cells[7] && tr.cells[7].querySelector('input') ? tr.cells[7].querySelector('input').value : '1');
+        var mappingFactor = tr.cells[7] && tr.cells[7].querySelector('input')
+            ? tr.cells[7].querySelector('input').value
+            : '1';
         var unit = tr.cells[8] && tr.cells[8].querySelector('input') ? tr.cells[8].querySelector('input').value : '';
         var type = rec && rec.type ? rec.type : '16u';
         var length = rec && rec.length ? parseInt(rec.length, 10) : 1;
@@ -482,11 +500,14 @@
             .then(r => r.json())
             .then(data => {
                 if (data.status === 'ok') {
-                    var decoded = decodeRegisterValue(data.raws || [], type, factor, unit);
+                    var decoded = decodeRegisterValue(data.raws || [], type, displayFactor, unit);
+                    var mappedRaw = computeMappedRaw(data.raws || [], mappingFactor);
                     var ts = data.lastUpdated ? new Date(data.lastUpdated * 1000).toLocaleTimeString() : '–';
                     setRegisterValueCell(tr,
                         '<div>' + decoded.display + '</div>' +
-                        '<div class="small text-muted">raw: ' + decoded.raw + ' | ' + ts + '</div>');
+                        '<div class="small text-muted">raw: ' + decoded.raw +
+                        (mappedRaw !== null ? ' | map: ' + mappedRaw : '') +
+                        ' | ' + ts + '</div>');
                 } else if (data.status === 'stale') {
                     setRegisterValueCell(tr, '<span class="text-warning">stale</span>');
                 } else {
@@ -508,7 +529,7 @@
             if (!Number.isFinite(reg) || reg <= 0) return;
             var rec = availableRegisters.find(function(rr) { return rr.register === reg; });
             if (rec) {
-                applyRegisterMetadataToRow(tr, rec);
+                applyRegisterMetadataToRow(tr, rec, { preserveFactor: true, preserveUnit: true });
             }
         });
     }
@@ -533,7 +554,7 @@
         if (entry.register) {
             var rec = availableRegisters.find(function(rr) { return rr.register === Number(entry.register); });
             if (rec) {
-                applyRegisterMetadataToRow(tr, rec);
+                applyRegisterMetadataToRow(tr, rec, { preserveFactor: true, preserveUnit: true });
             }
         }
         tr.cells[2].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
