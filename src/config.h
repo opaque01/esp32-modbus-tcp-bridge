@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define APP_FIRMWARE_VERSION "1.0.1"
+#define APP_FIRMWARE_VERSION "1.1.0"
 
 /* Maximum number of register-mapping entries stored in NVS */
 #define MAX_MAPPING_ENTRIES 32
@@ -36,7 +36,7 @@ typedef struct {
         char     name[32];
         uint16_t register_addr;  /* source Huawei register (e.g. 37004 = BAT SOC) */
         uint8_t  function_code;  /* always 3 = FC03 */
-        uint8_t  data_type;      /* 0=uint16, 1=int16, 2=float32 */
+        uint8_t  data_type;      /* 0=16u, 1=16s, 2=32u, 3=32s */
         uint8_t  byte_order;     /* 0=Big-Endian, 1=Little-Endian */
         float    factor;         /* scale factor applied to raw value */
         char     unit[8];        /* display unit, e.g. "%" or "W" */

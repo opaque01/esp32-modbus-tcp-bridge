@@ -41,7 +41,7 @@
 #define BLOCK_Q_COUNT       2u
 #define CACHE_BLOCK_COUNT   17u
 
-/* Static data arrays — total 304 × 2 = 608 bytes */
+/* Static data arrays — total 627 × 2 = 1254 bytes */
 static uint16_t s_data_a[BLOCK_A_COUNT];
 static uint16_t s_data_b[BLOCK_B_COUNT];
 static uint16_t s_data_c[BLOCK_C_COUNT];

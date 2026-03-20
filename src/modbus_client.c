@@ -3,7 +3,7 @@
  *
  * Design decisions (see design.md):
  *  - Raw FC03 over lwIP socket, no external library.
- *  - 4 fixed cache blocks (A static once, B+C+D every poll_interval seconds).
+ *  - Core blocks A+B+C plus optional blocks D..Q every poll_interval seconds.
  *  - On connection failure: invalidate cache → server returns Exception 0x04.
  *  - No exponential back-off; retry interval equals poll_interval (≥60 s).
  */
@@ -157,13 +157,22 @@ static int fc03_read(int sock, uint16_t start_reg, uint16_t count,
         ESP_LOGE(TAG, "unexpected function code 0x%02X", pdu[0]);
         return -1;
     }
-    uint8_t byte_count = pdu[1];
-    if (byte_count < count * 2) {
-        ESP_LOGE(TAG, "short byte_count %u (expected >= %u)", byte_count, count * 2);
+    if (resp_pdu_len < 2) {
+        ESP_LOGE(TAG, "response too short (%u)", resp_pdu_len);
         return -1;
     }
-    if (byte_count > count * 2) {
-        ESP_LOGW(TAG, "byte_count %u > requested %u, trimming", byte_count, count * 2);
+
+    const uint8_t byte_count = pdu[1];
+    const uint16_t expected_bytes = (uint16_t)(count * 2U);
+    if (byte_count != expected_bytes) {
+        ESP_LOGW(TAG, "unexpected byte_count %u (expected %u) for reg=%u count=%u",
+                 byte_count, expected_bytes, start_reg, count);
+        return -1;
+    }
+    if (resp_pdu_len != (uint16_t)(byte_count + 2U)) {
+        ESP_LOGW(TAG, "unexpected PDU length %u (byte_count=%u) for reg=%u count=%u",
+                 resp_pdu_len, byte_count, start_reg, count);
+        return -1;
     }
 
     /* Big-Endian → host uint16_t */
@@ -178,14 +187,15 @@ static int mb_transaction(int sock, uint8_t unit_id, const uint8_t *req_pdu, uin
 {
     static uint16_t s_tid = 0;
     uint8_t req[260];
+    uint8_t discard_pdu[260];
 
     if (!req_pdu || req_pdu_len == 0 || !resp_pdu || !resp_pdu_len || resp_cap == 0 || req_pdu_len > 253) {
         return -1;
     }
 
-    s_tid++;
-    req[0] = (s_tid >> 8) & 0xFF;
-    req[1] = s_tid & 0xFF;
+    const uint16_t req_tid = ++s_tid;
+    req[0] = (req_tid >> 8) & 0xFF;
+    req[1] = req_tid & 0xFF;
     req[2] = 0x00;
     req[3] = 0x00;
     req[4] = (uint8_t)(((uint16_t)(req_pdu_len + 1U) >> 8) & 0xFF);
@@ -198,31 +208,61 @@ static int mb_transaction(int sock, uint8_t unit_id, const uint8_t *req_pdu, uin
         return -1;
     }
 
-    uint8_t mbap[7];
-    if (recv_all(sock, mbap, 7) != 7) {
-        ESP_LOGE(TAG, "recv MBAP failed");
-        return -1;
+    for (int tries = 0; tries < 4; tries++) {
+        uint8_t mbap[7];
+        if (recv_all(sock, mbap, 7) != 7) {
+            ESP_LOGE(TAG, "recv MBAP failed");
+            return -1;
+        }
+
+        const uint16_t resp_tid = ((uint16_t)mbap[0] << 8) | mbap[1];
+        const uint16_t proto_id = ((uint16_t)mbap[2] << 8) | mbap[3];
+        const uint16_t resp_len = ((uint16_t)mbap[4] << 8) | mbap[5];
+        const uint8_t resp_uid = mbap[6];
+
+        if (resp_len < 2) {
+            ESP_LOGE(TAG, "invalid MBAP length: %u", resp_len);
+            return -1;
+        }
+
+        const uint16_t pdu_len = (uint16_t)(resp_len - 1U);
+        uint8_t *dst = resp_pdu;
+        if (pdu_len > resp_cap) {
+            if (pdu_len > sizeof(discard_pdu)) {
+                ESP_LOGE(TAG, "response PDU too large: %u", pdu_len);
+                return -1;
+            }
+            dst = discard_pdu;
+        }
+
+        if (recv_all(sock, dst, pdu_len) != pdu_len) {
+            ESP_LOGE(TAG, "recv PDU failed");
+            return -1;
+        }
+
+        if (proto_id != 0) {
+            ESP_LOGW(TAG, "drop invalid MBAP response tid=%u uid=%u proto=%u",
+                     resp_tid, resp_uid, proto_id);
+            continue;
+        }
+
+        if (resp_uid != unit_id) {
+            /* Some gateways rewrite Unit-ID in TCP responses (e.g. fixed gateway UID). */
+            ESP_LOGD(TAG, "response UID differs: got=%u expected=%u (accepted by TID match)",
+                     resp_uid, unit_id);
+        }
+
+        if (pdu_len > resp_cap) {
+            ESP_LOGE(TAG, "matching response too large: %u", pdu_len);
+            return -1;
+        }
+
+        *resp_pdu_len = pdu_len;
+        return 0;
     }
 
-    uint16_t resp_len = ((uint16_t)mbap[4] << 8) | mbap[5];
-    if (resp_len < 2) {
-        ESP_LOGE(TAG, "invalid MBAP length: %u", resp_len);
-        return -1;
-    }
-
-    uint16_t pdu_len = resp_len - 1;
-    if (pdu_len > resp_cap) {
-        ESP_LOGE(TAG, "response PDU too large: %u", pdu_len);
-        return -1;
-    }
-
-    if (recv_all(sock, resp_pdu, pdu_len) != pdu_len) {
-        ESP_LOGE(TAG, "recv PDU failed");
-        return -1;
-    }
-
-    *resp_pdu_len = pdu_len;
-    return 0;
+    ESP_LOGW(TAG, "no valid MBAP response for tid=%u unit=%u", req_tid, unit_id);
+    return -1;
 }
 
 static void reset_upstream_locked(void)
@@ -306,39 +346,39 @@ static int connect_to_inverter(void)
 }
 
 /*
- * Read all four register blocks in sequence.
- * Block A (static device info) is read every cycle to detect reconnection.
- * Block D is optional — failure does not cause reconnect.
- * Returns true if blocks B+C (the essential ones) were read successfully.
+ * Read all active register blocks in sequence.
+ * Returns true if the essential blocks A+B+C were read successfully.
  */
 static bool poll_inverter(int sock)
 {
     uint8_t uid = s_config.huawei_dev ? s_config.huawei_dev : 1;
     uint16_t tmp[160]; /* largest cached block (37000..37155 => 156 regs) */
-    bool essential_ok = true;
+    bool block_a_ok = false;
+    bool block_b_ok = false;
+    bool block_c_ok = false;
 
     /* Match proven Huawei LAN sequence (huawei_LAN.php) */
     if (read_block_chunked(sock, 30000, 81, tmp, uid)) {
         reg_cache_write_block(0, tmp, 81);
+        block_a_ok = true;
     } else {
         ESP_LOGW(TAG, "Block A (30000, 81) read failed");
-        essential_ok = false;
     }
     vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
 
     if (read_block_chunked(sock, 32000, 116, tmp, uid)) {
         reg_cache_write_block(1, tmp, 116);
+        block_b_ok = true;
     } else {
         ESP_LOGW(TAG, "Block B (32000, 116) read failed");
-        essential_ok = false;
     }
     vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
 
     if (read_block_chunked(sock, 37000, 156, tmp, uid)) {
         reg_cache_write_block(2, tmp, 156);
+        block_c_ok = true;
     } else {
         ESP_LOGW(TAG, "Block C (37000, 156) read failed");
-        essential_ok = false;
     }
     vTaskDelay(pdMS_TO_TICKS(MB_BLOCK_DELAY_MS));
 
@@ -440,7 +480,12 @@ static bool poll_inverter(int sock)
         ESP_LOGD(TAG, "Block Q (42054, 2) not available — skipping");
     }
 
-    return essential_ok;
+    ESP_LOGI(TAG, "Poll result A(30000)= %s, B(32000)= %s, C(37000)= %s",
+             block_a_ok ? "OK" : "FAIL",
+             block_b_ok ? "OK" : "FAIL",
+             block_c_ok ? "OK" : "FAIL");
+
+    return block_a_ok && block_b_ok && block_c_ok;
 }
 
 int modbus_client_forward_write(uint8_t unit_id, const uint8_t *pdu, uint16_t pdu_len,

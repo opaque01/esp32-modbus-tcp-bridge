@@ -58,15 +58,17 @@ static void read_inverter_name(char *out, size_t out_size)
         return;
     }
 
-    uint16_t regs[16];
-    for (int i = 0; i < 16; i++) {
+    /* Model string length from catalog: 15 words (30 ASCII chars). */
+    uint16_t regs[15];
+    for (int i = 0; i < 15; i++) {
         if (reg_cache_lookup((uint16_t)(30000 + i), &regs[i]) != REG_CACHE_OK) {
             return;
         }
     }
 
     size_t oi = 0;
-    for (int i = 0; i < 16 && oi + 1 < out_size; i++) {
+    int alnum_count = 0;
+    for (int i = 0; i < 15 && oi + 1 < out_size; i++) {
         uint8_t b1 = (uint8_t)(regs[i] >> 8);
         uint8_t b2 = (uint8_t)(regs[i] & 0xFF);
         uint8_t bytes[2] = { b1, b2 };
@@ -75,8 +77,11 @@ static void read_inverter_name(char *out, size_t out_size)
             if (c == 0x00 || c == 0xFF) {
                 continue;
             }
-            if (isprint(c) || c == ' ') {
+            if (isalnum(c) || c == ' ' || c == '-' || c == '_' || c == '.' || c == '/' || c == '+') {
                 out[oi++] = (char)c;
+                if (isalnum(c)) {
+                    alnum_count++;
+                }
             }
         }
     }
@@ -84,6 +89,11 @@ static void read_inverter_name(char *out, size_t out_size)
         oi--;
     }
     out[oi] = '\0';
+
+    /* Filter garbage like "%#?#": require at least 3 alnum chars. */
+    if (alnum_count < 3) {
+        out[0] = '\0';
+    }
 }
 
 /*

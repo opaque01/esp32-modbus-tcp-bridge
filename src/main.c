@@ -150,6 +150,40 @@ static void save_config(void)
     ESP_LOGI(TAG, "Config saved to NVS");
 }
 
+static const char *mapping_type_to_string(uint8_t data_type)
+{
+    switch (data_type) {
+    case 1: return "16s";
+    case 2: return "32u";
+    case 3: return "32s";
+    default: return "16u";
+    }
+}
+
+static uint8_t mapping_type_from_string(const char *type_str)
+{
+    if (!type_str || type_str[0] == '\0') {
+        return 0;
+    }
+    if (strcmp(type_str, "16s") == 0) return 1;
+    if (strcmp(type_str, "32u") == 0) return 2;
+    if (strcmp(type_str, "32s") == 0) return 3;
+    return 0;
+}
+
+static const char *mapping_order_to_string(uint8_t byte_order)
+{
+    return (byte_order == 1) ? "LE" : "BE";
+}
+
+static uint8_t mapping_order_from_string(const char *order_str)
+{
+    if (!order_str || order_str[0] == '\0') {
+        return 0;
+    }
+    return (strcmp(order_str, "LE") == 0) ? 1 : 0;
+}
+
 /* -----------------------------------------------------------------------
  * HTTP handlers
  * ----------------------------------------------------------------------- */
@@ -194,8 +228,12 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         if (!entry) continue;
         cJSON_AddStringToObject(entry, "name", s_config.mapping[i].name);
         cJSON_AddNumberToObject(entry, "register", s_config.mapping[i].register_addr);
+        cJSON_AddNumberToObject(entry, "func", s_config.mapping[i].function_code);
+        cJSON_AddStringToObject(entry, "type", mapping_type_to_string(s_config.mapping[i].data_type));
+        cJSON_AddStringToObject(entry, "order", mapping_order_to_string(s_config.mapping[i].byte_order));
         cJSON_AddNumberToObject(entry, "factor", (double)s_config.mapping[i].factor);
         cJSON_AddStringToObject(entry, "unit", s_config.mapping[i].unit);
+        cJSON_AddNumberToObject(entry, "timeout", s_config.mapping[i].timeout_ms);
         cJSON_AddItemToArray(mapping, entry);
     }
 
@@ -314,8 +352,12 @@ static esp_err_t config_post_handler(httpd_req_t *req)
             if (idx >= MAX_MAPPING_ENTRIES) break;
             cJSON *name = cJSON_GetObjectItemCaseSensitive(row, "name");
             cJSON *reg  = cJSON_GetObjectItemCaseSensitive(row, "register");
+            cJSON *func = cJSON_GetObjectItemCaseSensitive(row, "func");
+            cJSON *type = cJSON_GetObjectItemCaseSensitive(row, "type");
+            cJSON *order = cJSON_GetObjectItemCaseSensitive(row, "order");
             cJSON *factor = cJSON_GetObjectItemCaseSensitive(row, "factor");
             cJSON *unit = cJSON_GetObjectItemCaseSensitive(row, "unit");
+            cJSON *timeout = cJSON_GetObjectItemCaseSensitive(row, "timeout");
             uint16_t reg_addr = 0;
             if (cJSON_IsNumber(reg)) {
                 reg_addr = (uint16_t)reg->valuedouble;
@@ -330,13 +372,16 @@ static esp_err_t config_post_handler(httpd_req_t *req)
                 strncpy(s_config.mapping[idx].name, name->valuestring, sizeof(s_config.mapping[idx].name) - 1);
             }
             s_config.mapping[idx].register_addr = reg_addr;
-            s_config.mapping[idx].function_code = 3;
-            s_config.mapping[idx].data_type = 0;
-            s_config.mapping[idx].byte_order = 0;
+            s_config.mapping[idx].function_code = cJSON_IsNumber(func) ? (uint8_t)func->valuedouble : 3;
+            s_config.mapping[idx].data_type =
+                (cJSON_IsString(type) && type->valuestring) ? mapping_type_from_string(type->valuestring) : 0;
+            s_config.mapping[idx].byte_order =
+                (cJSON_IsString(order) && order->valuestring) ? mapping_order_from_string(order->valuestring) : 0;
             s_config.mapping[idx].factor = cJSON_IsNumber(factor) ? (float)factor->valuedouble : 1.0f;
             if (cJSON_IsString(unit) && unit->valuestring) {
                 strncpy(s_config.mapping[idx].unit, unit->valuestring, sizeof(s_config.mapping[idx].unit) - 1);
             }
+            s_config.mapping[idx].timeout_ms = cJSON_IsNumber(timeout) ? (uint16_t)timeout->valuedouble : 0;
             idx++;
         }
         s_config.mapping_count = (uint8_t)idx;

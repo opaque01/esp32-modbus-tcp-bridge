@@ -13,6 +13,8 @@
         #helpAccordion .accordion-body { padding: .8rem .9rem; background: #ffffff; border-top: 1px solid #e9ecef; }
         #helpAccordion .accordion-collapse.collapse { display: none; }
         #helpAccordion .accordion-collapse.show { display: block; }
+        #proxyTableWrap { max-height: 70vh; overflow: auto; }
+        #proxyTable thead th { position: sticky; top: 0; background: #f8f9fa; z-index: 1; }
     </style>
 </head>
 <body class="p-3">
@@ -25,6 +27,9 @@
         </li>
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="modbus-tab" data-bs-toggle="tab" data-bs-target="#modbus" type="button" role="tab">Modbus</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy" type="button" role="tab">Proxy Register</button>
         </li>
         <li class="nav-item" role="presentation">
             <button class="nav-link" id="status-tab" data-bs-toggle="tab" data-bs-target="#status" type="button" role="tab">Status</button>
@@ -114,6 +119,14 @@
             <div id="mappingSection">
                 <h4>Register‑Mapping</h4>
                 <div class="form-text mb-2">Die Spalte <strong>Wert</strong> zeigt den dekodierten Quellwert aus dem Huawei-Cache. Der <strong>Faktor</strong> wirkt nur auf den ausgegebenen Rohwert des Mapping-Registers.</div>
+                <div class="d-flex align-items-center gap-2 mb-2">
+                    <div class="form-check m-0">
+                        <input class="form-check-input" type="checkbox" id="onlyAvailableRegisters" checked>
+                        <label class="form-check-label" for="onlyAvailableRegisters">Nur Register mit aktuellen Werten zeigen</label>
+                    </div>
+                    <button class="btn btn-outline-primary btn-sm" id="scanAvailableBtn" type="button">Register prüfen</button>
+                    <span id="availStatus" class="small text-muted">Noch nicht geprüft.</span>
+                </div>
                 <table class="table table-sm" id="mappingTable">
                 <thead>
                 <tr>
@@ -136,6 +149,36 @@
             </table>
             <button class="btn btn-primary btn-sm" id="addRowBtn" type="button">+</button>
         </div> <!-- end mappingSection -->
+        </div>
+        <div class="tab-pane fade" id="proxy" role="tabpanel">
+            <div class="d-flex align-items-center justify-content-between mb-2">
+                <h5 class="mb-0">Proxy Register</h5>
+                <button class="btn btn-outline-primary btn-sm" id="proxyRefreshBtn" type="button">Aktualisieren</button>
+            </div>
+            <div class="form-text mb-2">
+                Zeigt alle vom Proxy gepufferten Registerblöcke. Für bekannte Register werden Name, Typ und dekodierter Wert angezeigt.
+            </div>
+            <div id="proxyTableWrap" class="table-responsive">
+                <table class="table table-sm table-striped" id="proxyTable">
+                    <thead>
+                    <tr>
+                        <th>Block</th>
+                        <th>Register</th>
+                        <th>Name</th>
+                        <th>Typ</th>
+                        <th>Wert</th>
+                        <th>Raw</th>
+                        <th>Status</th>
+                        <th>Aktualisiert</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr>
+                        <td colspan="8" class="text-muted">Noch nicht geladen.</td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
         <div class="tab-pane fade" id="status" role="tabpanel">
             <div class="row g-3 mb-3">
@@ -258,6 +301,8 @@
                             <div><a href="http://192.168.1.15/status" target="_blank" rel="noopener">http://192.168.1.15/status</a> (Status)</div>
                             <div><a href="http://192.168.1.15/registers" target="_blank" rel="noopener">http://192.168.1.15/registers</a> (Register-Liste)</div>
                             <div><a href="http://192.168.1.15/register-value?addr=30000&amp;count=15" target="_blank" rel="noopener">http://192.168.1.15/register-value?addr=30000&amp;count=15</a> (Beispiel Registerwert / Model Name)</div>
+                            <div><a href="http://192.168.1.15/register-value?addr=32080&amp;count=2" target="_blank" rel="noopener">http://192.168.1.15/register-value?addr=32080&amp;count=2</a> (Proxy-Register: Active Power)</div>
+                            <div><a href="http://192.168.1.15/register-value?addr=32000&amp;count=16" target="_blank" rel="noopener">http://192.168.1.15/register-value?addr=32000&amp;count=16</a> (Proxy-Registerblock, max. 16 Register pro Anfrage)</div>
                         </div>
                     </div>
                 </div>
@@ -287,7 +332,7 @@
     <footer class="border-top py-3 mt-4">
         <div class="container">
             <p class="text-center text-muted small">
-                Modbus TCP Bridge <span id="fw-version">v1.0.1</span>. &copy; Copyright 2026 by Walter Kruml. All rights reserved.
+                Modbus TCP Bridge <span id="fw-version">v1.1.0</span>. &copy; Copyright 2026 by Walter Kruml. All rights reserved.
             </p>
         </div>
     </footer>
@@ -310,8 +355,28 @@
     });
     // mapping operations
     var availableRegisters = [];
+    var registerAvailability = {};
     var registerValueTimer = null;
     var registerCatalogUrl = '/registers?v=' + Date.now();
+    var proxyBlocks = [
+        { id: 'A', start: 30000, count: 81 },
+        { id: 'B', start: 32000, count: 116 },
+        { id: 'C', start: 37000, count: 156 },
+        { id: 'D', start: 38210, count: 24 },
+        { id: 'E', start: 37200, count: 1 },
+        { id: 'F', start: 37738, count: 50 },
+        { id: 'G', start: 42900, count: 1 },
+        { id: 'H', start: 43006, count: 1 },
+        { id: 'I', start: 47000, count: 1 },
+        { id: 'J', start: 47089, count: 1 },
+        { id: 'K', start: 47954, count: 66 },
+        { id: 'L', start: 40120, count: 35 },
+        { id: 'M', start: 47075, count: 28 },
+        { id: 'N', start: 47242, count: 58 },
+        { id: 'O', start: 47415, count: 4 },
+        { id: 'P', start: 47589, count: 2 },
+        { id: 'Q', start: 42054, count: 2 }
+    ];
     function loadAvailableRegisters(callback) {
         fetch(registerCatalogUrl, { cache: 'no-store' })
             .then(r => r.json())
@@ -319,11 +384,289 @@
             .catch(() => {
                 // fallback list for offline HTML testing
                 availableRegisters = [
-                    {name:'BAT SOC',register:37004,factor:0.1,unit:'%',func:3,type:'16u',order:'BE'},
+                    {name:'BAT SOC',register:37004,factor:10,unit:'%',func:3,type:'16u',order:'BE'},
                     {name:'PV Spannung 1',register:32014,factor:0.1,unit:'V',func:3,type:'16u',order:'BE'},
-                    {name:'AC Leistung',register:32080,factor:1,unit:'W',func:3,type:'16u',order:'BE'}
+                    {name:'AC Leistung',register:32080,factor:1000,unit:'kW',func:3,type:'32s',order:'BE'}
                 ];
                 if (callback) callback();
+            });
+    }
+    function isRegisterAddressAvailable(addr) {
+        return !!registerAvailability[String(addr)];
+    }
+    function isRegisterDefinitionAvailable(rec) {
+        if (!rec || rec.register === undefined || rec.register === null) return false;
+        var base = Number(rec.register);
+        if (!Number.isFinite(base)) return false;
+        var length = rec.length !== undefined ? parseInt(rec.length, 10) : 1;
+        if (!Number.isFinite(length) || length < 1) length = 1;
+        for (var i = 0; i < length; i++) {
+            if (!isRegisterAddressAvailable(base + i)) return false;
+        }
+        return true;
+    }
+    function shouldFilterToAvailable() {
+        var cb = document.getElementById('onlyAvailableRegisters');
+        return !!(cb && cb.checked);
+    }
+    function collectSelectableRegisters(selectedReg) {
+        var onlyAvailable = shouldFilterToAvailable();
+        var selected = Number(selectedReg);
+        return availableRegisters.filter(function(r) {
+            if (!onlyAvailable) return true;
+            var reg = Number(r.register);
+            if (Number.isFinite(selected) && Number.isFinite(reg) && reg === selected) return true;
+            return isRegisterDefinitionAvailable(r);
+        });
+    }
+    function refreshAvailabilityStatus() {
+        var statusEl = document.getElementById('availStatus');
+        if (!statusEl) return;
+        var count = Object.keys(registerAvailability).length;
+        if (count === 0) {
+            statusEl.textContent = 'Keine aktuellen Registerwerte erkannt.';
+            return;
+        }
+        statusEl.textContent = 'Aktuell verfuegbare Register-Woerter: ' + count;
+    }
+    function rebuildMappingNameSelects() {
+        document.querySelectorAll('#mappingTable tbody tr').forEach(function(tr) {
+            var regInput = tr.cells[2] && tr.cells[2].querySelector('input');
+            var selectedReg = regInput ? parseInt(regInput.value, 10) : NaN;
+            var cell = tr.cells[1];
+            if (!cell) return;
+            cell.innerHTML = '';
+            var sel = makeNameSelect(Number.isFinite(selectedReg) ? selectedReg : undefined);
+            cell.appendChild(sel);
+            if (Number.isFinite(selectedReg)) {
+                sel.value = String(selectedReg);
+            }
+        });
+    }
+    function scanAvailableRegisters() {
+        var statusEl = document.getElementById('availStatus');
+        var btn = document.getElementById('scanAvailableBtn');
+        if (statusEl) statusEl.textContent = 'Pruefe Register...';
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Pruefe...';
+        }
+
+        Promise.all(proxyBlocks.map(fetchProxyBlock))
+            .then(function(results) {
+                registerAvailability = {};
+                results.forEach(function(result) {
+                    if (!result || !Array.isArray(result.raws)) return;
+                    for (var i = 0; i < result.raws.length; i++) {
+                        if (Number.isFinite(result.raws[i])) {
+                            registerAvailability[String(result.block.start + i)] = true;
+                        }
+                    }
+                });
+                refreshAvailabilityStatus();
+                rebuildMappingNameSelects();
+                updateVisibleRegisterValues();
+            })
+            .catch(function() {
+                registerAvailability = {};
+                if (statusEl) statusEl.textContent = 'Register-Pruefung fehlgeschlagen.';
+                rebuildMappingNameSelects();
+            })
+            .finally(function() {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = 'Register pruefen';
+                }
+            });
+    }
+    function getProxyBlockForAddress(address) {
+        for (var i = 0; i < proxyBlocks.length; i++) {
+            var b = proxyBlocks[i];
+            if (address >= b.start && address < (b.start + b.count)) {
+                return b;
+            }
+        }
+        return null;
+    }
+    function buildProxyMetaByRegister() {
+        var byReg = {};
+        availableRegisters.forEach(function(rec) {
+            if (!rec || rec.register === undefined || rec.register === null) return;
+            var reg = Number(rec.register);
+            if (!Number.isFinite(reg)) return;
+            if (!getProxyBlockForAddress(reg)) return;
+            if (!byReg[reg]) byReg[reg] = rec;
+        });
+        return byReg;
+    }
+    function proxyStatusBadge(status) {
+        if (status === 'ok') return '<span class="badge bg-success">ok</span>';
+        if (status === 'stale') return '<span class="badge bg-warning text-dark">stale</span>';
+        if (status === 'partial') return '<span class="badge bg-warning text-dark">partial</span>';
+        if (status === 'not_found') return '<span class="badge bg-secondary">n/a</span>';
+        return '<span class="badge bg-danger">error</span>';
+    }
+    function fetchProxyBlock(block) {
+        var chunkSize = 16; /* backend limit in /register-value */
+        var reqs = [];
+        for (let offset = 0; offset < block.count; offset += chunkSize) {
+            const cnt = Math.min(chunkSize, block.count - offset);
+            const url = '/register-value?addr=' + encodeURIComponent(block.start + offset) + '&count=' + encodeURIComponent(cnt);
+            reqs.push(
+                fetch(url)
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        return { offset: offset, count: cnt, data: data };
+                    })
+                    .catch(function() {
+                        return { offset: offset, count: cnt, data: { status: 'error' } };
+                    })
+            );
+        }
+        return Promise.all(reqs).then(function(parts) {
+            var raws = new Array(block.count).fill(null);
+            var okWords = 0;
+            var lastUpdated = 0;
+            var hasStale = false;
+            var hasNotFound = false;
+            var hasError = false;
+
+            parts.forEach(function(part) {
+                var data = part.data || {};
+                if (data.status === 'ok' && Array.isArray(data.raws)) {
+                    for (var i = 0; i < part.count && i < data.raws.length; i++) {
+                        var v = Number(data.raws[i]);
+                        if (Number.isFinite(v)) {
+                            raws[part.offset + i] = v;
+                            okWords++;
+                        }
+                    }
+                    if (data.lastUpdated && data.lastUpdated > lastUpdated) {
+                        lastUpdated = data.lastUpdated;
+                    }
+                } else if (data.status === 'stale') {
+                    hasStale = true;
+                } else if (data.status === 'not_found') {
+                    hasNotFound = true;
+                } else {
+                    hasError = true;
+                }
+            });
+
+            var status = 'error';
+            if (okWords === block.count) {
+                status = 'ok';
+            } else if (okWords > 0) {
+                status = 'partial';
+            } else if (hasStale) {
+                status = 'stale';
+            } else if (hasNotFound) {
+                status = 'not_found';
+            } else if (hasError) {
+                status = 'error';
+            }
+
+            return {
+                block: block,
+                status: status,
+                raws: raws,
+                lastUpdated: lastUpdated
+            };
+        });
+    }
+    function refreshProxyTable() {
+        var tbody = document.querySelector('#proxyTable tbody');
+        var refreshBtn = document.getElementById('proxyRefreshBtn');
+        if (!tbody) return;
+
+        if (refreshBtn) {
+            refreshBtn.disabled = true;
+            refreshBtn.textContent = 'Lade...';
+        }
+        tbody.innerHTML = '<tr><td colspan="8" class="text-muted">Lade Proxy-Register...</td></tr>';
+
+        var metaByReg = buildProxyMetaByRegister();
+        Promise.all(proxyBlocks.map(fetchProxyBlock))
+            .then(function(results) {
+                var byStart = {};
+                results.forEach(function(r) {
+                    byStart[r.block.start] = r;
+                });
+
+                var rows = [];
+                proxyBlocks.forEach(function(block) {
+                    var blockResult = byStart[block.start] || { status: 'error', raws: [], lastUpdated: 0 };
+                    for (var i = 0; i < block.count; i++) {
+                        var address = block.start + i;
+                        var rec = metaByReg[address] || null;
+                        var length = rec && rec.length ? parseInt(rec.length, 10) : 1;
+                        if (!Number.isFinite(length) || length < 1) length = 1;
+
+                        var type = rec && rec.type ? rec.type : '16u';
+                        var factor = (rec && rec.factor !== undefined) ? rec.factor : 1;
+                        var unit = rec && rec.unit ? rec.unit : '';
+                        var status = blockResult.status;
+                        var display = '–';
+                        var raw = '–';
+                        var updated = '–';
+
+                        var word = blockResult.raws[i];
+                        if (Number.isFinite(word)) {
+                            status = 'ok';
+                            display = String(word);
+                            raw = String(word);
+                            updated = formatTs(blockResult.lastUpdated || 0);
+                            if (rec) {
+                                var slice = blockResult.raws.slice(i, i + length);
+                                var complete = slice.length >= length && slice.every(function(v) { return Number.isFinite(v); });
+                                if (complete) {
+                                    var decoded = decodeRegisterValue(slice, type, factor, unit);
+                                    display = decoded.display;
+                                    raw = decoded.raw;
+                                } else {
+                                    display = 'unvollständig';
+                                    status = 'partial';
+                                }
+                            }
+                        } else if (status === 'stale') {
+                            display = 'stale';
+                        } else if (status === 'not_found') {
+                            display = 'n/a';
+                        } else if (status === 'partial') {
+                            display = 'teilweise';
+                        } else {
+                            display = 'Fehler';
+                        }
+
+                        var blockLabel = block.id + ' (' + block.start + '-' + (block.start + block.count - 1) + ')';
+                        var nameHtml = rec && rec.name ? escapeHtml(rec.name) : '<span class="text-muted">–</span>';
+                        var typeHtml = rec && rec.type ? escapeHtml(rec.type) : '<span class="text-muted">–</span>';
+
+                        rows.push(
+                            '<tr>' +
+                            '<td>' + blockLabel + '</td>' +
+                            '<td>' + address + '</td>' +
+                            '<td>' + nameHtml + '</td>' +
+                            '<td>' + typeHtml + '</td>' +
+                            '<td>' + escapeHtml(display) + '</td>' +
+                            '<td class="small text-muted">' + escapeHtml(raw) + '</td>' +
+                            '<td>' + proxyStatusBadge(status) + '</td>' +
+                            '<td class="small text-muted">' + escapeHtml(updated) + '</td>' +
+                            '</tr>'
+                        );
+                    }
+                });
+
+                tbody.innerHTML = rows.join('');
+            })
+            .catch(function() {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-danger">Proxy-Register konnten nicht geladen werden.</td></tr>';
+            })
+            .finally(function() {
+                if (refreshBtn) {
+                    refreshBtn.disabled = false;
+                    refreshBtn.textContent = 'Aktualisieren';
+                }
             });
     }
     function makeNameSelect(value) {
@@ -331,7 +674,7 @@
         sel.className = 'form-select';
         sel.innerHTML = '<option value=""></option>';
         var groups = {};
-        availableRegisters.forEach(function(r) {
+        collectSelectableRegisters(value).forEach(function(r) {
             var dev = r.device || 'Inverter';
             if (!groups[dev]) groups[dev] = [];
             groups[dev].push(r);
@@ -346,7 +689,9 @@
                 var opt = document.createElement('option');
                 opt.value = String(r.register);
                 var suffix = r.writeable ? ' [RW]' : '';
-                opt.textContent = r.name + ' (' + r.register + ')' + suffix;
+                var availableSuffix = isRegisterDefinitionAvailable(r) ? '' : ' [nicht verfuegbar]';
+                var gainSuffix = (r.factor !== undefined && r.factor !== null) ? (' | gain ' + r.factor) : '';
+                opt.textContent = r.name + ' (' + r.register + ')' + gainSuffix + suffix + availableSuffix;
                 opt.setAttribute('data-name', r.name || '');
                 opt.setAttribute('data-device', r.device || '');
                 opt.setAttribute('data-type', r.type || '');
@@ -379,21 +724,21 @@
         if (rec.func !== undefined) tr.cells[4].firstChild.value = rec.func;
         if (rec.type !== undefined) tr.cells[5].firstChild.value = rec.type;
         if (rec.order !== undefined) tr.cells[6].firstChild.value = rec.order;
-        /* Mapping factor is an explicit output multiplier and must not be derived
-           from the register catalog scaling used for display decoding. */
+        if (!opts.preserveFactor && rec.factor !== undefined) {
+            tr.cells[7].firstChild.value = rec.factor;
+        }
         if (!opts.preserveUnit) {
             tr.cells[8].firstChild.value = rec.unit || '';
         }
     }
-    function applyScale(value, factor) {
-        var f = parseFloat(factor);
-        if (!isFinite(f) || f === 0) f = 1;
-        if (f > 1) return value / f;
-        if (f > 0 && f < 1) return value * (1 / f);
-        return value;
+    function applyScale(rawValue, gain) {
+        var g = parseFloat(gain);
+        if (!isFinite(g) || g === 0) g = 1;
+        return rawValue / g;
     }
     function formatScaledValue(value, factor, unit) {
         var scaled = applyScale(value, factor);
+        if (!isFinite(scaled)) return '–';
         var text = Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(3).replace(/\.?0+$/,'');
         return text + (unit ? ' ' + unit : '');
     }
@@ -465,13 +810,35 @@
             cell.innerHTML = html;
         }
     }
-    function computeMappedRaw(raws, mappingFactor) {
+    function computeMappedRaw(raws, mappingFactor, mappingType, mappingOrder) {
         if (!Array.isArray(raws) || raws.length === 0) return null;
         var raw = Number(raws[0]);
         if (!Number.isFinite(raw)) return null;
+        var t = (mappingType || '16u').toLowerCase();
+        var order = (mappingOrder || 'BE').toUpperCase();
+
+        var base = raw;
+        if (t === '16s') {
+            base = raw > 0x7fff ? raw - 0x10000 : raw;
+        } else if ((t === '32u' || t === '32s') && raws.length >= 2) {
+            var hi = Number(raws[0]) & 0xffff;
+            var lo = Number(raws[1]) & 0xffff;
+            if (order === 'LE') {
+                var tmp = hi;
+                hi = lo;
+                lo = tmp;
+            }
+            var u32 = hi * 65536 + lo;
+            base = (t === '32s' && u32 >= 2147483648) ? (u32 - 4294967296) : u32;
+        }
+
         var f = parseFloat(mappingFactor);
         if (!isFinite(f) || f === 0) f = 1;
-        return Math.round(raw * f);
+        var mapped = Math.round(base * f);
+        if (!Number.isFinite(mapped)) return null;
+        if (mapped < 0) mapped = 0;
+        if (mapped > 65535) mapped = 65535;
+        return mapped;
     }
     function updateRegisterValueForRow(tr) {
         if (!tr) return;
@@ -492,7 +859,14 @@
         var mappingFactor = tr.cells[7] && tr.cells[7].querySelector('input')
             ? tr.cells[7].querySelector('input').value
             : '1';
-        var unit = tr.cells[8] && tr.cells[8].querySelector('input') ? tr.cells[8].querySelector('input').value : '';
+        var mappingType = tr.cells[5] && tr.cells[5].querySelector('input')
+            ? tr.cells[5].querySelector('input').value
+            : '16u';
+        var mappingOrder = tr.cells[6] && tr.cells[6].querySelector('input')
+            ? tr.cells[6].querySelector('input').value
+            : 'BE';
+        var rowUnit = tr.cells[8] && tr.cells[8].querySelector('input') ? tr.cells[8].querySelector('input').value : '';
+        var displayUnit = (rec && rec.unit !== undefined) ? rec.unit : rowUnit;
         var type = rec && rec.type ? rec.type : '16u';
         var length = rec && rec.length ? parseInt(rec.length, 10) : 1;
         if (!Number.isFinite(length) || length < 1) length = 1;
@@ -500,14 +874,12 @@
             .then(r => r.json())
             .then(data => {
                 if (data.status === 'ok') {
-                    var decoded = decodeRegisterValue(data.raws || [], type, displayFactor, unit);
-                    var mappedRaw = computeMappedRaw(data.raws || [], mappingFactor);
-                    var ts = data.lastUpdated ? new Date(data.lastUpdated * 1000).toLocaleTimeString() : '–';
+                    var decoded = decodeRegisterValue(data.raws || [], type, displayFactor, displayUnit);
+                    var mappedRaw = computeMappedRaw(data.raws || [], mappingFactor, mappingType, mappingOrder);
                     setRegisterValueCell(tr,
                         '<div>' + decoded.display + '</div>' +
                         '<div class="small text-muted">raw: ' + decoded.raw +
-                        (mappedRaw !== null ? ' | map: ' + mappedRaw : '') +
-                        ' | ' + ts + '</div>');
+                        (mappedRaw !== null ? ' | map: ' + mappedRaw : '') + '</div>');
                 } else if (data.status === 'stale') {
                     setRegisterValueCell(tr, '<span class="text-warning">stale</span>');
                 } else {
@@ -558,6 +930,8 @@
             }
         }
         tr.cells[2].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
+        tr.cells[5].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
+        tr.cells[6].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
         tr.cells[7].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
         tr.cells[8].querySelector('input').addEventListener('change', function() { updateRegisterValueForRow(tr); });
         renumberRows();
@@ -622,18 +996,29 @@
                 }
                 resyncMappingRowsFromCatalog();
                 updateVisibleRegisterValues();
+                scanAvailableRegisters();
             })
             .catch(err => console.warn('config load failed', err));
     }
 
     window.addEventListener('load', function() {
         loadAvailableRegisters(loadConfig);
+        refreshAvailabilityStatus();
         updateVisibleRegisterValues();
         registerValueTimer = setInterval(updateVisibleRegisterValues, 10000);
     });
 
     document.getElementById('addRowBtn').addEventListener('click', () => {
         addMappingRow({});
+    });
+    document.getElementById('proxyRefreshBtn').addEventListener('click', () => {
+        refreshProxyTable();
+    });
+    document.getElementById('scanAvailableBtn').addEventListener('click', () => {
+        scanAvailableRegisters();
+    });
+    document.getElementById('onlyAvailableRegisters').addEventListener('change', () => {
+        rebuildMappingNameSelects();
     });
 
     document.getElementById('saveBtn').addEventListener('click', () => {
@@ -702,6 +1087,23 @@
         return '#ccc';
     }
 
+    function escapeHtml(text) {
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function sanitizeInverterName(name) {
+        if (typeof name !== 'string') return '';
+        var cleaned = name.trim();
+        cleaned = cleaned.replace(/[^\w .\-\/+]/g, '');
+        if (!/[A-Za-z0-9]/.test(cleaned)) return '';
+        return cleaned;
+    }
+
     function fetchStatus() {
         fetch('/status')
             .then(function(r) { return r.json(); })
@@ -717,13 +1119,14 @@
                 document.getElementById('st-network').textContent = networkText;
 
                 var badge = document.getElementById('st-inverter');
-                var inverterName = data.inverter_name || '';
+                var inverterName = sanitizeInverterName(data.inverter_name || '');
+                var inverterNameHtml = inverterName ? '<div class="small mt-1 text-muted">' + escapeHtml(inverterName) + '</div>' : '';
                 if (data.inverter_connected) {
                     badge.innerHTML = '<span class="badge bg-success text-dark" style="color:#111 !important;">verbunden</span>' +
-                        (inverterName ? '<div class="small mt-1 text-muted">' + inverterName + '</div>' : '');
+                        inverterNameHtml;
                 } else {
                     badge.innerHTML = '<span class="badge bg-danger">getrennt</span>' +
-                        (inverterName ? '<div class="small mt-1 text-muted">' + inverterName + '</div>' : '');
+                        inverterNameHtml;
                 }
 
                 document.getElementById('st-last-poll').textContent = formatTs(data.last_poll_ts);
@@ -792,6 +1195,9 @@
             startStatusPolling();
         } else {
             stopStatusPolling();
+        }
+        if (btn.id === 'proxy-tab') {
+            refreshProxyTable();
         }
 
         var actionButtons = document.getElementById('actionButtons');

@@ -121,6 +121,56 @@ static void send_exception(int sock, uint16_t tid, uint8_t unit_id,
     send(sock, resp, sizeof(resp), 0);
 }
 
+static int resolve_mapping_value(uint16_t mapping_addr, uint16_t *out_value)
+{
+    const uint8_t idx = (uint8_t)(mapping_addr - 1U);
+    const uint16_t src = s_config.mapping[idx].register_addr;
+    const uint8_t type = s_config.mapping[idx].data_type;
+    const uint8_t order = s_config.mapping[idx].byte_order;
+    const float factor = s_config.mapping[idx].factor;
+
+    uint16_t w0 = 0;
+    int result = reg_cache_lookup(src, &w0);
+    if (result != REG_CACHE_OK) {
+        return result;
+    }
+
+    float base = (float)w0;
+    if (type == 1) { /* 16s */
+        base = (float)(int16_t)w0;
+    } else if (type == 2 || type == 3) { /* 32u / 32s */
+        uint16_t w1 = 0;
+        result = reg_cache_lookup((uint16_t)(src + 1U), &w1);
+        if (result != REG_CACHE_OK) {
+            return result;
+        }
+
+        uint16_t hi = w0;
+        uint16_t lo = w1;
+        if (order == 1) { /* LE word order */
+            hi = w1;
+            lo = w0;
+        }
+
+        uint32_t raw32 = ((uint32_t)hi << 16) | (uint32_t)lo;
+        if (type == 2) {
+            base = (float)raw32;
+        } else {
+            base = (float)(int32_t)raw32;
+        }
+    }
+
+    float mapped = base * factor;
+    if (mapped <= 0.0f) {
+        *out_value = 0;
+    } else if (mapped >= 65535.0f) {
+        *out_value = 65535;
+    } else {
+        *out_value = (uint16_t)(mapped + 0.5f);
+    }
+    return REG_CACHE_OK;
+}
+
 static void send_pdu_response(int sock, uint16_t tid, uint8_t unit_id,
                               const uint8_t *pdu, uint16_t pdu_len)
 {
@@ -164,15 +214,7 @@ static int resolve_register(uint16_t addr, uint16_t *out_value)
 
     /* 2. Mapping — 1-based row index */
     if (s_config.mapping_enabled && addr >= 1 && addr <= s_config.mapping_count) {
-        uint16_t src = s_config.mapping[addr - 1].register_addr;
-        uint16_t raw;
-        result = reg_cache_lookup(src, &raw);
-        if (result == REG_CACHE_OK) {
-            float factor = s_config.mapping[addr - 1].factor;
-            *out_value   = (uint16_t)((float)raw * factor);
-            return REG_CACHE_OK;
-        }
-        return result;   /* REG_CACHE_STALE if source block is invalid */
+        return resolve_mapping_value(addr, out_value);
     }
 
     return REG_CACHE_NOT_FOUND;
