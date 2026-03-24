@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define APP_FIRMWARE_VERSION "1.1.0"
+#define APP_FIRMWARE_VERSION "1.1.1"
 
 /* Maximum number of register-mapping entries stored in NVS */
 #define MAX_MAPPING_ENTRIES 32

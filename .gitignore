@@ -12,3 +12,4 @@ dependencies.lock
 .idea/
 __pycache__/
 *.pyc
+docs/

@@ -332,7 +332,7 @@
     <footer class="border-top py-3 mt-4">
         <div class="container">
             <p class="text-center text-muted small">
-                Modbus TCP Bridge <span id="fw-version">v1.1.0</span>. &copy; Copyright 2026 by Walter Kruml. All rights reserved.
+                Modbus TCP Bridge <span id="fw-version">v-</span>. &copy; Copyright 2026 by Walter Kruml. All rights reserved.
             </p>
         </div>
     </footer>
@@ -1076,6 +1076,35 @@
         return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
     }
 
+    function formatAge(seconds) {
+        var s = Math.max(0, Math.floor(seconds || 0));
+        if (s < 5) return 'gerade eben';
+        if (s < 60) return 'vor ' + s + ' s';
+
+        var m = Math.floor(s / 60);
+        if (m < 60) return 'vor ' + m + ' min';
+
+        var h = Math.floor(m / 60);
+        var remM = m % 60;
+        if (h < 24) return remM ? ('vor ' + h + ' h ' + remM + ' min') : ('vor ' + h + ' h');
+
+        var d = Math.floor(h / 24);
+        var remH = h % 24;
+        return remH ? ('vor ' + d + ' d ' + remH + ' h') : ('vor ' + d + ' d');
+    }
+
+    function formatLastPollAge(lastPollTs, uptimeS) {
+        if (!lastPollTs) return '–';
+
+        var ageS;
+        if (typeof uptimeS === 'number' && uptimeS >= 0 && lastPollTs <= (uptimeS + 300)) {
+            ageS = uptimeS - lastPollTs;
+        } else {
+            ageS = Math.floor(Date.now() / 1000) - lastPollTs;
+        }
+        return formatAge(ageS);
+    }
+
     function formatTs(ts) {
         if (!ts) return '–';
         return new Date(ts * 1000).toLocaleTimeString();
@@ -1129,7 +1158,8 @@
                         inverterNameHtml;
                 }
 
-                document.getElementById('st-last-poll').textContent = formatTs(data.last_poll_ts);
+                var lastPollAge = formatLastPollAge(data.last_poll_ts, data.uptime_s || 0);
+                document.getElementById('st-last-poll').textContent = lastPollAge;
                 document.getElementById('st-clients').textContent = data.modbus_clients !== undefined ? data.modbus_clients : '–';
                 var cl = document.getElementById('st-clientlist');
                 if (Array.isArray(data.client_ips) && data.client_ips.length > 0) {
@@ -1154,7 +1184,7 @@
                     lines.push('<div style="color:' + (data.inverter_connected ? '#8fd19e' : '#ffd93d') + '">[' + now + '] ' +
                         (data.inverter_connected ? 'I' : 'W') + ' (inverter): ' +
                         (data.inverter_connected ? 'Inverter verbunden' : 'Inverter getrennt') + '.</div>');
-                    lines.push('<div style="color:#9ec5fe">[' + now + '] I (poll): Letzte Abfrage: ' + formatTs(data.last_poll_ts) + '.</div>');
+                    lines.push('<div style="color:#9ec5fe">[' + now + '] I (poll): Letzte Abfrage: ' + lastPollAge + '.</div>');
                     lines.push('<div style="color:#9ec5fe">[' + now + '] I (modbus): Aktive Clients: ' + (data.modbus_clients !== undefined ? data.modbus_clients : '–') + '.</div>');
                     logDiv.innerHTML = lines.join('');
                 }
